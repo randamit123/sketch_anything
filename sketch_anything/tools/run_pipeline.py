@@ -747,6 +747,10 @@ def main():
         help="Disable LLM-based object resolution (use static mapping only)",
     )
     parser.add_argument(
+        "--gpu", type=int, default=None,
+        help="GPU device ID to use (e.g. --gpu 3). Sets CUDA_VISIBLE_DEVICES.",
+    )
+    parser.add_argument(
         "--model-path", default=None,
         help="Local path to VLM model weights (e.g. ~/models/Qwen2.5-VL-7B-Instruct)",
     )
@@ -755,6 +759,11 @@ def main():
         help="Local path to LLM resolver model weights (e.g. ~/models/Qwen2.5-1.5B-Instruct)",
     )
     args = parser.parse_args()
+
+    # Set GPU before any torch/CUDA imports
+    if args.gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+        logger.info(f"Using GPU {args.gpu} (CUDA_VISIBLE_DEVICES={args.gpu})")
 
     run_pipeline(
         hdf5_path=args.hdf5,
