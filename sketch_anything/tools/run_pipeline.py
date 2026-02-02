@@ -246,27 +246,60 @@ def load_demo_actions(hdf5_path: str, demo_index: int = 0):
 def set_env_state(env, initial_state: np.ndarray):
     """Reset the LIBERO environment to a specific MuJoCo state.
 
+    Uses LIBERO's own ``set_init_state`` when available.  Falls back to
+    manual qpos/qvel injection with padding if the state vector length
+    differs from the current model (can happen across MuJoCo versions).
+
     Args:
         env: LIBERO OffScreenRenderEnv.
         initial_state: Full MuJoCo state vector from the demo.
     """
-    # robosuite environments store the sim on env.env.sim
-    sim = env.env.sim
+    # Try LIBERO's built-in method first
+    try:
+        env.set_init_state(initial_state)
+        logger.info("Set env state via set_init_state")
+        return
+    except (ValueError, RuntimeError) as e:
+        logger.warning(f"set_init_state failed ({e}), trying manual restore")
 
-    # Split state into qpos and qvel
+    # Manual fallback: handle dimension mismatches by padding/truncating
+    sim = env.env.sim
     nq = sim.model.nq
     nv = sim.model.nv
+    expected = nq + nv
 
-    if len(initial_state) >= nq + nv:
-        qpos = initial_state[:nq]
-        qvel = initial_state[nq:nq + nv]
-        sim.set_state_from_flattened(np.concatenate([qpos, qvel]))
-        sim.forward()
-        logger.info(f"Set env state: qpos={nq}, qvel={nv}")
-    else:
+    state = initial_state
+    if len(state) < expected:
+        # Pad with zeros (extra joints in current model get zero velocity)
+        padded = np.zeros(expected)
+        # Copy qpos (take min of both sizes)
+        nq_src = min(nq, len(state))
+        padded[:nq_src] = state[:nq_src]
+        # Copy qvel from after qpos in source
+        nv_src_start = nq_src
+        nv_available = len(state) - nv_src_start
+        nv_copy = min(nv, nv_available)
+        if nv_copy > 0:
+            padded[nq:nq + nv_copy] = state[nv_src_start:nv_src_start + nv_copy]
+        state = padded
         logger.warning(
-            f"State vector length {len(initial_state)} < expected "
-            f"{nq + nv}. Skipping state restoration."
+            f"State vector padded: {len(initial_state)} -> {expected} "
+            f"(nq={nq}, nv={nv})"
+        )
+    elif len(state) > expected:
+        state = state[:expected]
+        logger.warning(
+            f"State vector truncated: {len(initial_state)} -> {expected}"
+        )
+
+    try:
+        sim.set_state_from_flattened(state)
+        sim.forward()
+        logger.info(f"Set env state manually: qpos={nq}, qvel={nv}")
+    except Exception as e:
+        logger.warning(
+            f"Manual state restore failed ({e}). "
+            f"Using default reset state instead."
         )
 
 
