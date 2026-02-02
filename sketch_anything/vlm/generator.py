@@ -127,14 +127,36 @@ class VLMPrimitiveGenerator:
         import torch
         from transformers import AutoProcessor
 
-        # Qwen2.5-VL uses Qwen2_5_VLForConditionalGeneration
-        # Qwen2-VL uses Qwen2VLForConditionalGeneration
-        if "qwen2.5" in self.config.model_name.lower() or "qwen2_5" in self.config.model_name.lower():
-            from transformers import Qwen2_5_VLForConditionalGeneration as ModelClass
-        else:
-            from transformers import Qwen2VLForConditionalGeneration as ModelClass
+        # Try the specific Qwen2.5-VL class first, then Qwen2-VL, then the
+        # generic AutoModelForVision2Seq which works with local model dirs
+        # (the saved config.json specifies the correct architecture).
+        ModelClass = None
+        model_lower = self.config.model_name.lower()
+
+        if "qwen2.5" in model_lower or "qwen2_5" in model_lower:
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration as ModelClass
+            except ImportError:
+                logger.info("Qwen2_5_VLForConditionalGeneration not available in this transformers version")
+
+        if ModelClass is None:
+            try:
+                from transformers import Qwen2VLForConditionalGeneration as ModelClass
+            except ImportError:
+                logger.info("Qwen2VLForConditionalGeneration not available either")
+
+        if ModelClass is None:
+            try:
+                from transformers import AutoModelForVision2Seq
+                ModelClass = AutoModelForVision2Seq
+                logger.info("Falling back to AutoModelForVision2Seq")
+            except ImportError:
+                from transformers import AutoModel
+                ModelClass = AutoModel
+                logger.info("Falling back to AutoModel")
 
         logger.info(f"Initializing Transformers fallback generator ({self.config.model_name})")
+        logger.info(f"  Model class: {ModelClass.__name__}")
 
         # Determine dtype and device
         if self.config.device == "mps":
@@ -143,6 +165,7 @@ class VLMPrimitiveGenerator:
             self._fallback_model = ModelClass.from_pretrained(
                 self.config.model_name,
                 torch_dtype=dtype,
+                trust_remote_code=True,
             ).to("mps")
         else:
             dtype = "auto"
@@ -150,10 +173,12 @@ class VLMPrimitiveGenerator:
                 self.config.model_name,
                 torch_dtype=dtype,
                 device_map="auto",
+                trust_remote_code=True,
             )
 
         self._fallback_processor = AutoProcessor.from_pretrained(
             self.config.model_name,
+            trust_remote_code=True,
         )
         logger.info("Fallback generator ready")
 

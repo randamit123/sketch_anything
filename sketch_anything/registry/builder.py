@@ -223,7 +223,15 @@ def _resolve_via_llm(
     logger.info(f"LLM resolver: loading {model_name} for object matching...")
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        # Try fast tokenizer first, fall back to slow if the tokenizer
+        # class isn't available in this transformers version.
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        except (ValueError, KeyError) as tok_err:
+            logger.info(f"Fast tokenizer failed ({tok_err}), trying slow tokenizer")
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True, use_fast=False
+            )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
