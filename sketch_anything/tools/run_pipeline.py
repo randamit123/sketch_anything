@@ -58,32 +58,67 @@ def load_libero_env(hdf5_path: str):
     Reads env_args and bddl_file_name from the HDF5 attributes and
     initialises an OffScreenRenderEnv.
 
+    The HDF5 env_args has a nested structure::
+
+        {"type": 1, "env_name": "...", "bddl_file": "...",
+         "env_kwargs": {"bddl_file_name": "...", ...}}
+
+    OffScreenRenderEnv expects the flat env_kwargs dict, not the
+    outer wrapper.
+
     Args:
         hdf5_path: Path to a LIBERO HDF5 demo file.
 
     Returns:
-        (env, task_instruction, env_args) tuple.
+        (env, task_instruction, env_args_raw) tuple.
     """
     from libero.libero.envs import OffScreenRenderEnv
 
     f = h5py.File(hdf5_path, "r")
-    env_args = json.loads(f["data"].attrs["env_args"])
+    env_args_raw = json.loads(f["data"].attrs["env_args"])
     problem_info = json.loads(f["data"].attrs.get("problem_info", "{}"))
     task_instruction = problem_info.get("language_instruction", "unknown")
+
+    # Also grab the direct bddl_file_name attr if available
+    bddl_attr = f["data"].attrs.get("bddl_file_name", None)
+    if isinstance(bddl_attr, bytes):
+        bddl_attr = bddl_attr.decode("utf-8")
+
     f.close()
 
+    # The HDF5 env_args is nested: extract the inner env_kwargs
+    # which is what OffScreenRenderEnv actually needs.
+    if "env_kwargs" in env_args_raw:
+        env_kwargs = dict(env_args_raw["env_kwargs"])
+    else:
+        # Fallback: assume env_args is already flat
+        env_kwargs = dict(env_args_raw)
+
+    # Make sure bddl_file_name is present
+    if "bddl_file_name" not in env_kwargs:
+        # Try the outer bddl_file key, then the HDF5 attr
+        bddl_file = env_args_raw.get("bddl_file") or bddl_attr
+        if bddl_file:
+            env_kwargs["bddl_file_name"] = bddl_file
+        else:
+            raise ValueError(
+                "Could not find bddl_file_name in HDF5 env_args. "
+                f"Keys available: {list(env_args_raw.keys())}"
+            )
+
     # Override camera sizes to 256x256 for consistency
-    env_args["camera_heights"] = 256
-    env_args["camera_widths"] = 256
+    env_kwargs["camera_heights"] = 256
+    env_kwargs["camera_widths"] = 256
 
     logger.info(f"Task: {task_instruction}")
-    logger.info(f"Creating LIBERO environment...")
+    logger.info(f"BDDL: {env_kwargs.get('bddl_file_name', 'unknown')}")
+    logger.info("Creating LIBERO environment...")
 
-    env = OffScreenRenderEnv(**env_args)
+    env = OffScreenRenderEnv(**env_kwargs)
     env.seed(0)
     env.reset()
 
-    return env, task_instruction, env_args
+    return env, task_instruction, env_args_raw
 
 
 def load_demo_actions(hdf5_path: str, demo_index: int = 0):
@@ -228,7 +263,7 @@ def run_pipeline(
     output_dir: str,
     demo_index: int = 0,
     use_mock: bool = False,
-    camera_names: list[str] | None = None,
+    camera_names=None,
     fps: int = 20,
 ):
     """Run the full sketch annotation pipeline on a LIBERO demo.

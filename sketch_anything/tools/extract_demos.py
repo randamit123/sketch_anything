@@ -31,7 +31,7 @@ import numpy as np
 def extract_demo(
     hdf5_path: str,
     output_dir: str,
-    demo_indices: list[int] | None = None,
+    demo_indices=None,
     fps: int = 20,
     save_video: bool = True,
 ) -> dict:
