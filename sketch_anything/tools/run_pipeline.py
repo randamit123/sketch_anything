@@ -35,8 +35,10 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -50,6 +52,44 @@ logging.basicConfig(
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger("run_pipeline")
+
+
+def _resolve_bddl_path(bddl_basename: str) -> str:
+    """Resolve a BDDL filename to its full path on this machine.
+
+    Searches LIBERO's configured bddl_files directory for the file.
+    Falls back to a recursive glob if the LIBERO config is unavailable.
+
+    Args:
+        bddl_basename: Just the filename, e.g. "turn_on_the_stove.bddl".
+
+    Returns:
+        Absolute path to the BDDL file, or empty string if not found.
+    """
+    # Try LIBERO's path config first
+    try:
+        from libero.libero import get_libero_path
+        bddl_root = get_libero_path("bddl_files")
+        matches = glob.glob(
+            os.path.join(bddl_root, "**", bddl_basename), recursive=True
+        )
+        if matches:
+            logger.info(f"Resolved BDDL via LIBERO config: {matches[0]}")
+            return matches[0]
+    except Exception as e:
+        logger.warning(f"LIBERO path config unavailable: {e}")
+
+    # Fallback: search relative to this file's project root
+    project_root = Path(__file__).resolve().parent.parent.parent
+    libero_dir = project_root / "LIBERO"
+    if libero_dir.exists():
+        matches = list(libero_dir.rglob(bddl_basename))
+        if matches:
+            result = str(matches[0])
+            logger.info(f"Resolved BDDL via project search: {result}")
+            return result
+
+    return ""
 
 
 def load_libero_env(hdf5_path: str):
@@ -106,12 +146,31 @@ def load_libero_env(hdf5_path: str):
                 f"Keys available: {list(env_args_raw.keys())}"
             )
 
+    # The bddl_file_name stored in the HDF5 is often a relative path from
+    # the original machine (e.g. "chiliocosm/bddl_files/libero_goal/X.bddl").
+    # If it doesn't exist on this machine, resolve it via LIBERO's path config.
+    bddl_path = env_kwargs["bddl_file_name"]
+    if not os.path.exists(bddl_path):
+        bddl_basename = os.path.basename(bddl_path)
+        logger.info(
+            f"BDDL path not found: {bddl_path}. "
+            f"Resolving '{bddl_basename}' via LIBERO config..."
+        )
+        resolved = _resolve_bddl_path(bddl_basename)
+        if resolved:
+            env_kwargs["bddl_file_name"] = resolved
+        else:
+            raise FileNotFoundError(
+                f"Cannot find BDDL file '{bddl_basename}'. "
+                f"Stored path was: {bddl_path}"
+            )
+
     # Override camera sizes to 256x256 for consistency
     env_kwargs["camera_heights"] = 256
     env_kwargs["camera_widths"] = 256
 
     logger.info(f"Task: {task_instruction}")
-    logger.info(f"BDDL: {env_kwargs.get('bddl_file_name', 'unknown')}")
+    logger.info(f"BDDL: {env_kwargs['bddl_file_name']}")
     logger.info("Creating LIBERO environment...")
 
     env = OffScreenRenderEnv(**env_kwargs)
