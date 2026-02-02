@@ -165,6 +165,38 @@ def load_libero_env(hdf5_path: str):
                 f"Stored path was: {bddl_path}"
             )
 
+    # ControlEnv.__init__ builds controller_configs internally from the
+    # "controller" parameter.  The HDF5 env_kwargs often also contains a
+    # "controller_configs" key which would collide.  Strip it (and any
+    # other keys that are not accepted as named parameters) to avoid
+    # "got multiple values for keyword argument" errors.
+    _VALID_ENV_KEYS = {
+        "bddl_file_name",
+        "robots",
+        "controller",
+        "gripper_types",
+        "initialization_noise",
+        "use_camera_obs",
+        "has_renderer",
+        "has_offscreen_renderer",
+        "render_camera",
+        "render_collision_mesh",
+        "render_visual_mesh",
+        "render_gpu_device_id",
+        "control_freq",
+        "horizon",
+        "ignore_done",
+        "hard_reset",
+        "camera_names",
+        "camera_heights",
+        "camera_widths",
+        "camera_depths",
+        "camera_segmentations",
+        "renderer",
+        "renderer_config",
+    }
+    env_kwargs = {k: v for k, v in env_kwargs.items() if k in _VALID_ENV_KEYS}
+
     # Override camera sizes to 256x256 for consistency
     env_kwargs["camera_heights"] = 256
     env_kwargs["camera_widths"] = 256
