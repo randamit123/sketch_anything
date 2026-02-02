@@ -2,3 +2,8 @@ LIBERO/
 *.pdf
 outputs/
 *.md
+*.pyc
+__pycache__/
+!README.md
+
+.DS_Store

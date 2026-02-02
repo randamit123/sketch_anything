@@ -389,6 +389,8 @@ def run_pipeline(
     use_mock: bool = False,
     camera_names=None,
     fps: int = 20,
+    dump_bodies: bool = False,
+    use_llm: bool = True,
 ):
     """Run the full sketch annotation pipeline on a LIBERO demo.
 
@@ -409,11 +411,13 @@ def run_pipeline(
         use_mock: Use mock primitives instead of VLM (no GPU needed).
         camera_names: Camera list. Defaults to agentview + eye_in_hand.
         fps: Video frame rate.
+        dump_bodies: If True, log all MuJoCo body and site names then exit.
+        use_llm: If True, use LLM-based object resolution (default True).
     """
     from sketch_anything.config import Config
     from sketch_anything.registry.builder import build_object_registry
     from sketch_anything.rendering.config import RenderConfig
-    from sketch_anything.rendering.renderer import render_primitives
+    from sketch_anything.rendering.renderer import build_legend_data, render_primitives
     from sketch_anything.validation.validator import validate_primitives
     from sketch_anything.vlm.config import VLMConfig
     from sketch_anything.vlm.generator import VLMPrimitiveGenerator
@@ -425,26 +429,97 @@ def run_pipeline(
         camera_names = ["agentview", "robot0_eye_in_hand"]
 
     # ---- 1. Load environment ----
+    logger.info("=" * 60)
+    logger.info("PIPELINE START")
+    logger.info("=" * 60)
     env, task_instruction, env_args_raw = load_libero_env(hdf5_path)
     initial_state, actions = load_demo_actions(hdf5_path, demo_index)
 
     # ---- 2. Restore initial state ----
     set_env_state(env, initial_state)
 
+    # ---- Optional: dump all MuJoCo bodies/sites for debugging ----
+    if dump_bodies:
+        sim = env.sim
+        logger.info("-" * 60)
+        logger.info("DUMP: All MuJoCo bodies in this environment")
+        logger.info("-" * 60)
+        for i in range(sim.model.nbody):
+            name = sim.model.body_id2name(i)
+            if name:
+                pos = sim.data.body_xpos[i]
+                logger.info(f"  body[{i:3d}] '{name}'  pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
+        logger.info("-" * 60)
+        logger.info("DUMP: All MuJoCo sites in this environment")
+        logger.info("-" * 60)
+        for i in range(sim.model.nsite):
+            name = sim.model.site_id2name(i)
+            if name:
+                parent_body_id = sim.model.site_bodyid[i]
+                parent_name = sim.model.body_id2name(parent_body_id)
+                logger.info(f"  site[{i:3d}] '{name}'  parent_body='{parent_name}'")
+        logger.info("-" * 60)
+        logger.info("DUMP: objects_dict and fixtures_dict")
+        logger.info("-" * 60)
+        inner = env.env if hasattr(env, "env") else env
+        obj_dict = getattr(inner, "objects_dict", None)
+        fix_dict = getattr(inner, "fixtures_dict", None)
+        if obj_dict:
+            for k, v in obj_dict.items():
+                root = getattr(v, "root_body", "?")
+                logger.info(f"  objects_dict['{k}'] root_body='{root}'")
+        else:
+            logger.info("  objects_dict: None")
+        if fix_dict:
+            for k, v in fix_dict.items():
+                root = getattr(v, "root_body", "?")
+                logger.info(f"  fixtures_dict['{k}'] root_body='{root}'")
+        else:
+            logger.info("  fixtures_dict: None")
+        logger.info("-" * 60)
+
+        # Save body dump to file
+        dump_path = Path(output_dir) / "mujoco_bodies.txt"
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dump_path, "w") as df:
+            for i in range(sim.model.nbody):
+                name = sim.model.body_id2name(i)
+                if name:
+                    df.write(f"body {name}\n")
+            for i in range(sim.model.nsite):
+                name = sim.model.site_id2name(i)
+                if name:
+                    df.write(f"site {name}\n")
+        logger.info(f"Saved body dump to: {dump_path}")
+        logger.info("Exiting (--dump-bodies mode).")
+        env.close()
+        return
+
     # ---- 3. Build object registry from MuJoCo ----
-    logger.info("Building object registry from MuJoCo state...")
+    logger.info("-" * 60)
+    logger.info("STAGE: Object Registry (source: MuJoCo ground-truth 3D poses)")
+    logger.info("-" * 60)
     registries = build_object_registry(
-        env, task_instruction, camera_names, 256, 256
+        env, task_instruction, camera_names, 256, 256, use_llm=use_llm
     )
 
-    # Log what was found
+    # Detailed logging for each camera registry
     for cam, reg in registries.items():
-        obj_names = list(reg.keys())
-        logger.info(f"  {cam}: {len(obj_names)} objects -> {obj_names}")
+        logger.info(f"  [{cam}] {len(reg)} objects detected:")
+        for obj_id, obj_data in reg.items():
+            bbox = obj_data.get("bbox", [])
+            center = obj_data.get("center", [])
+            bbox_str = "[{:.3f}, {:.3f}, {:.3f}, {:.3f}]".format(*bbox) if len(bbox) == 4 else str(bbox)
+            center_str = "[{:.3f}, {:.3f}]".format(*center) if len(center) == 2 else str(center)
+            logger.info(
+                f"    - {obj_id} (label='{obj_data.get('label', obj_id)}') "
+                f"bbox={bbox_str} center={center_str}"
+            )
+    if not any(registries.values()):
+        logger.warning("  No objects detected in any view. Check name mapping.")
 
     # Save registry
     registry_path = out / "object_registry.json"
-    # Convert for JSON serialization (numpy arrays -> lists)
     registry_serializable = {}
     for cam, reg in registries.items():
         registry_serializable[cam] = {}
@@ -459,6 +534,18 @@ def run_pipeline(
     logger.info(f"Saved registry: {registry_path}")
 
     # ---- 4. Capture images + generate/render per camera ----
+    logger.info("-" * 60)
+    logger.info("STAGE: Primitive Generation")
+    logger.info("-" * 60)
+    if use_mock:
+        logger.info("MODE: --mock flag set. Using MOCK primitive generator.")
+        logger.info("  -> VLM is NOT being queried. Primitives are hard-coded templates.")
+        logger.info("  -> To use real VLM inference, remove the --mock flag.")
+    else:
+        logger.info("MODE: VLM inference (Qwen2.5-VL)")
+        logger.info("  -> The VLM WILL be queried for each camera view.")
+        logger.info("  -> Model: Qwen/Qwen2.5-VL-7B-Instruct")
+
     vlm_config = VLMConfig(
         model_name="Qwen/Qwen2.5-VL-7B-Instruct",
         max_tokens=2048,
@@ -470,7 +557,7 @@ def run_pipeline(
     )
 
     generator = VLMPrimitiveGenerator(vlm_config)
-    render_config = RenderConfig()
+    render_config = RenderConfig()  # legend disabled by default now
 
     all_primitives = {}
 
@@ -491,7 +578,7 @@ def run_pipeline(
         logger.info(f"  Saved original: {orig_path.name}")
 
         # Generate primitives
-        logger.info(f"  Generating primitives ({'mock' if use_mock else 'VLM'})...")
+        logger.info(f"  Generating primitives ({'MOCK' if use_mock else 'VLM'})...")
         t0 = time.time()
         try:
             primitives = generator.generate(
@@ -500,11 +587,31 @@ def run_pipeline(
                 task_instruction=task_instruction,
             )
             elapsed = time.time() - t0
-            logger.info(f"  Generated {len(primitives.primitives)} primitives in {elapsed:.1f}s")
+            logger.info(
+                f"  Generated {len(primitives.primitives)} primitives in {elapsed:.1f}s "
+                f"({'mock template' if use_mock else 'VLM inference'})"
+            )
         except Exception as e:
             elapsed = time.time() - t0
             logger.error(f"  Generation failed after {elapsed:.1f}s: {e}")
             continue
+
+        # Log each primitive for visibility
+        for i, prim in enumerate(primitives.primitives):
+            prim_dict = prim.model_dump()
+            ptype = prim_dict.get("type", "?")
+            pstep = prim_dict.get("step", "?")
+            if ptype == "circle":
+                logger.info(
+                    f"    [{i}] step={pstep} circle purpose={prim_dict.get('purpose')} "
+                    f"radius={prim_dict.get('radius')}"
+                )
+            elif ptype == "arrow":
+                logger.info(f"    [{i}] step={pstep} arrow")
+            elif ptype == "gripper":
+                logger.info(
+                    f"    [{i}] step={pstep} gripper action={prim_dict.get('action')}"
+                )
 
         # Validate
         validation = validate_primitives(primitives, registry)
@@ -514,7 +621,10 @@ def run_pipeline(
         for warn in validation.warnings:
             logger.warning(f"    Warning: {warn}")
 
-        # Render
+        # Render (legend is NOT drawn on image)
+        logger.info("-" * 60)
+        logger.info("STAGE: Rendering")
+        logger.info("-" * 60)
         annotated = render_primitives(
             image=image.copy(),
             primitives=primitives,
@@ -525,7 +635,7 @@ def run_pipeline(
         # Save annotated image
         ann_path = out / f"{cam_name}_annotated.png"
         cv2.imwrite(str(ann_path), cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
-        logger.info(f"  Saved annotated: {ann_path.name}")
+        logger.info(f"  Saved annotated image (no legend overlay): {ann_path.name}")
 
         # Save primitives JSON
         prim_data = primitives.model_dump()
@@ -534,10 +644,19 @@ def run_pipeline(
             json.dump(prim_data, f, indent=2)
         logger.info(f"  Saved primitives: {prim_path.name}")
 
+        # Save legend as separate JSON
+        legend_data = build_legend_data(primitives)
+        legend_path = out / f"legend_{cam_name}.json"
+        with open(legend_path, "w") as f:
+            json.dump(legend_data, f, indent=2)
+        logger.info(f"  Saved legend: {legend_path.name}")
+
         all_primitives[cam_name] = prim_data
 
     # ---- 5. Replay demo and save video ----
-    logger.info("Replaying demo for video recording...")
+    logger.info("-" * 60)
+    logger.info("STAGE: Demo Replay + Video Recording")
+    logger.info("-" * 60)
 
     # Re-restore initial state before replay
     set_env_state(env, initial_state)
@@ -559,6 +678,8 @@ def run_pipeline(
         "num_demo_steps": int(actions.shape[0]),
         "use_mock": use_mock,
         "vlm_model": vlm_config.model_name if not use_mock else "mock",
+        "generation_mode": "mock (hard-coded template)" if use_mock else "VLM inference",
+        "registry_source": "MuJoCo ground-truth 3D poses projected to 2D",
         "primitives_per_view": {
             cam: len(p.get("primitives", []))
             for cam, p in all_primitives.items()
@@ -572,8 +693,10 @@ def run_pipeline(
 
     # ---- Cleanup ----
     env.close()
-    logger.info("Pipeline complete.")
+    logger.info("=" * 60)
+    logger.info("PIPELINE COMPLETE")
     logger.info(f"All outputs saved to: {out}")
+    logger.info("=" * 60)
 
 
 def main():
@@ -604,6 +727,14 @@ def main():
         "--fps", type=int, default=20,
         help="Video frame rate (default: 20)",
     )
+    parser.add_argument(
+        "--dump-bodies", action="store_true",
+        help="Log all MuJoCo body/site names and exit (for debugging object mapping)",
+    )
+    parser.add_argument(
+        "--no-llm", action="store_true",
+        help="Disable LLM-based object resolution (use static mapping only)",
+    )
     args = parser.parse_args()
 
     run_pipeline(
@@ -613,6 +744,8 @@ def main():
         use_mock=args.mock,
         camera_names=args.cameras,
         fps=args.fps,
+        dump_bodies=args.dump_bodies,
+        use_llm=not args.no_llm,
     )
 
 
