@@ -123,37 +123,54 @@ class VLMPrimitiveGenerator:
         logger.info("Constrained generator ready")
 
     def _init_fallback(self) -> None:
-        """Initialize standard Transformers generator."""
+        """Initialize standard Transformers generator.
+
+        Model class resolution order:
+            1. Qwen2_5_VLForConditionalGeneration (transformers >= 4.49)
+            2. AutoModelForVision2Seq with trust_remote_code=True
+               (loads the correct class from the model's config.json)
+            3. AutoModel as last resort
+
+        IMPORTANT: We deliberately skip Qwen2VLForConditionalGeneration
+        because Qwen2.5-VL has a different architecture (larger hidden
+        dims) and loading Qwen2.5-VL weights into the Qwen2-VL class
+        causes shape mismatch errors.
+        """
         import torch
         from transformers import AutoProcessor
 
-        # Try the specific Qwen2.5-VL class first, then Qwen2-VL, then the
-        # generic AutoModelForVision2Seq which works with local model dirs
-        # (the saved config.json specifies the correct architecture).
         ModelClass = None
         model_lower = self.config.model_name.lower()
+        is_qwen25 = "qwen2.5" in model_lower or "qwen2_5" in model_lower
 
-        if "qwen2.5" in model_lower or "qwen2_5" in model_lower:
+        # 1. Try the native Qwen2.5-VL class (transformers >= 4.49)
+        if is_qwen25:
             try:
                 from transformers import Qwen2_5_VLForConditionalGeneration as ModelClass
             except ImportError:
-                logger.info("Qwen2_5_VLForConditionalGeneration not available in this transformers version")
+                logger.info(
+                    "Qwen2_5_VLForConditionalGeneration not in this transformers; "
+                    "will use AutoModelForVision2Seq with trust_remote_code"
+                )
 
-        if ModelClass is None:
+        # 2. For non-2.5 models, try Qwen2VLForConditionalGeneration
+        if ModelClass is None and not is_qwen25:
             try:
                 from transformers import Qwen2VLForConditionalGeneration as ModelClass
             except ImportError:
-                logger.info("Qwen2VLForConditionalGeneration not available either")
+                pass
 
+        # 3. AutoModelForVision2Seq — reads model_type from config.json
+        #    and loads the right class via trust_remote_code=True
         if ModelClass is None:
             try:
                 from transformers import AutoModelForVision2Seq
                 ModelClass = AutoModelForVision2Seq
-                logger.info("Falling back to AutoModelForVision2Seq")
+                logger.info("Using AutoModelForVision2Seq (will auto-detect architecture)")
             except ImportError:
                 from transformers import AutoModel
                 ModelClass = AutoModel
-                logger.info("Falling back to AutoModel")
+                logger.info("Using AutoModel as last resort")
 
         logger.info(f"Initializing Transformers fallback generator ({self.config.model_name})")
         logger.info(f"  Model class: {ModelClass.__name__}")
