@@ -391,6 +391,8 @@ def run_pipeline(
     fps: int = 20,
     dump_bodies: bool = False,
     use_llm: bool = True,
+    model_path: str = None,
+    llm_model_path: str = None,
 ):
     """Run the full sketch annotation pipeline on a LIBERO demo.
 
@@ -413,6 +415,8 @@ def run_pipeline(
         fps: Video frame rate.
         dump_bodies: If True, log all MuJoCo body and site names then exit.
         use_llm: If True, use LLM-based object resolution (default True).
+        model_path: Local path to VLM model weights (overrides default HF name).
+        llm_model_path: Local path to LLM resolver model weights.
     """
     from sketch_anything.config import Config
     from sketch_anything.registry.builder import build_object_registry
@@ -499,8 +503,11 @@ def run_pipeline(
     logger.info("-" * 60)
     logger.info("STAGE: Object Registry (source: MuJoCo ground-truth 3D poses)")
     logger.info("-" * 60)
+    if llm_model_path:
+        logger.info(f"Using local LLM resolver model path: {llm_model_path}")
     registries = build_object_registry(
-        env, task_instruction, camera_names, 256, 256, use_llm=use_llm
+        env, task_instruction, camera_names, 256, 256,
+        use_llm=use_llm, llm_model_path=llm_model_path,
     )
 
     # Detailed logging for each camera registry
@@ -546,8 +553,12 @@ def run_pipeline(
         logger.info("  -> The VLM WILL be queried for each camera view.")
         logger.info("  -> Model: Qwen/Qwen2.5-VL-7B-Instruct")
 
+    vlm_model = model_path if model_path else "Qwen/Qwen2.5-VL-7B-Instruct"
+    if model_path:
+        logger.info(f"Using local VLM model path: {model_path}")
+
     vlm_config = VLMConfig(
-        model_name="Qwen/Qwen2.5-VL-7B-Instruct",
+        model_name=vlm_model,
         max_tokens=2048,
         temperature=0.1,
         max_retries=3,
@@ -735,6 +746,14 @@ def main():
         "--no-llm", action="store_true",
         help="Disable LLM-based object resolution (use static mapping only)",
     )
+    parser.add_argument(
+        "--model-path", default=None,
+        help="Local path to VLM model weights (e.g. ~/models/Qwen2.5-VL-7B-Instruct)",
+    )
+    parser.add_argument(
+        "--llm-model-path", default=None,
+        help="Local path to LLM resolver model weights (e.g. ~/models/Qwen2.5-1.5B-Instruct)",
+    )
     args = parser.parse_args()
 
     run_pipeline(
@@ -746,6 +765,8 @@ def main():
         fps=args.fps,
         dump_bodies=args.dump_bodies,
         use_llm=not args.no_llm,
+        model_path=args.model_path,
+        llm_model_path=args.llm_model_path,
     )
 
 

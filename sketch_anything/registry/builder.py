@@ -69,8 +69,8 @@ LIBERO_OBJECT_MAPPING: Dict[str, List[str]] = {
     # Appliances -- note: "stove" with "turn on" needs the knob, handled
     # by TASK_EXTRA_OBJECTS below.
     "microwave": ["microwave"],
-    "stove": ["stove", "flat_stove"],
-    "stove knob": ["flat_stove_1_knob", "stove_knob", "knob"],
+    "stove": ["flat_stove_1_main", "stove", "flat_stove"],
+    "stove knob": ["flat_stove_1_button", "flat_stove_1_knob", "stove_knob", "knob", "button"],
 }
 
 # Extra objects to include based on task verb + object combinations.
@@ -190,6 +190,7 @@ def _resolve_via_llm(
     task_instruction: str,
     extracted_names: List[str],
     available_bodies: Set[str],
+    model_path: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
     """Use a lightweight LLM to match object names to MuJoCo bodies.
 
@@ -218,7 +219,7 @@ def _resolve_via_llm(
         logger.info("LLM resolver: no CUDA device, skipping")
         return None
 
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name = model_path if model_path else "Qwen/Qwen2.5-1.5B-Instruct"
     logger.info(f"LLM resolver: loading {model_name} for object matching...")
 
     try:
@@ -309,6 +310,7 @@ def resolve_object_names(
     fixtures_dict: Optional[dict] = None,
     sim=None,
     use_llm: bool = True,
+    llm_model_path: Optional[str] = None,
 ) -> Dict[str, str]:
     """Map natural language object names to MuJoCo body names.
 
@@ -327,6 +329,7 @@ def resolve_object_names(
         fixtures_dict: env.env.fixtures_dict (optional, for dynamic fallback).
         sim: MuJoCo sim object (optional, for site-based gripper lookup).
         use_llm: Whether to attempt LLM-based resolution (default True).
+        llm_model_path: Local path to LLM model weights (optional).
 
     Returns:
         Dict mapping natural_name -> MuJoCo body_name.
@@ -351,7 +354,8 @@ def resolve_object_names(
     # --- Tier 1: LLM resolver (if available) ---
     if use_llm:
         llm_result = _resolve_via_llm(
-            task_instruction, extracted_names, available_bodies
+            task_instruction, extracted_names, available_bodies,
+            model_path=llm_model_path,
         )
         if llm_result:
             resolved.update(llm_result)
@@ -437,6 +441,7 @@ def build_object_registry(
     image_width: int = 256,
     image_height: int = 256,
     use_llm: bool = True,
+    llm_model_path: Optional[str] = None,
 ) -> Dict[str, ViewObjectRegistry]:
     """Build object registries with bounding boxes for each camera view.
 
@@ -447,6 +452,7 @@ def build_object_registry(
         image_width: Width of rendered images.
         image_height: Height of rendered images.
         use_llm: Whether to use LLM-based object resolution (default True).
+        llm_model_path: Local path to LLM model weights (optional).
 
     Returns:
         Dict mapping camera_name -> ViewObjectRegistry.
@@ -463,7 +469,7 @@ def build_object_registry(
 
     object_mapping = resolve_object_names(
         task_instruction, available_bodies, objects_dict, fixtures_dict,
-        sim=sim, use_llm=use_llm,
+        sim=sim, use_llm=use_llm, llm_model_path=llm_model_path,
     )
     logger.info(f"Resolved objects: {object_mapping}")
 
