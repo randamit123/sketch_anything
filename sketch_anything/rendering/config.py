@@ -42,7 +42,7 @@ class RenderConfig:
     # Label / annotation options
     draw_labels: bool = False
     draw_object_bboxes: bool = True
-    draw_legend: bool = True
+    draw_legend: bool = False
     label_font_scale: float = 0.4
     label_thickness: int = 1
     bbox_color: Tuple[int, int, int] = (255, 255, 0)  # Yellow RGB

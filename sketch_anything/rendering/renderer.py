@@ -326,6 +326,54 @@ def _label_gripper(
 # Legend
 # ---------------------------------------------------------------------------
 
+def build_legend_data(primitives: SketchPrimitives) -> dict:
+    """Build a JSON-serializable legend describing the primitives.
+
+    Returns a dict with step-by-step descriptions and color info, suitable
+    for saving alongside the annotated image so the legend does not need
+    to be burned into the image itself.
+
+    Example output::
+
+        {
+            "steps": [
+                {
+                    "step": 1,
+                    "color_rgb": [0, 255, 0],
+                    "color_hex": "#00FF00",
+                    "primitives": ["grasp_point (circle)", "move (arrow)"]
+                },
+                ...
+            ]
+        }
+    """
+    all_steps = sorted({p.step for p in primitives.primitives})
+    steps = []
+
+    for step in all_steps:
+        color_rgb = get_step_color(step)
+        color_hex = "#{:02X}{:02X}{:02X}".format(*color_rgb)
+
+        step_prims = [p for p in primitives.primitives if p.step == step]
+        descriptions: List[str] = []
+        for p in step_prims:
+            if isinstance(p, ArrowPrimitive):
+                descriptions.append("move (arrow)")
+            elif isinstance(p, CirclePrimitive):
+                descriptions.append(f"{p.purpose} (circle)")
+            elif isinstance(p, GripperPrimitive):
+                descriptions.append(f"gripper {p.action} (gripper)")
+
+        steps.append({
+            "step": step,
+            "color_rgb": list(color_rgb),
+            "color_hex": color_hex,
+            "primitives": descriptions,
+        })
+
+    return {"steps": steps}
+
+
 def _draw_legend(
     canvas: np.ndarray,
     primitives: SketchPrimitives,
