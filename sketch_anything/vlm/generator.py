@@ -33,6 +33,18 @@ class VLMPrimitiveGenerator:
         self._initialized = False
         self._generator = None  # Outlines constrained generator
         self._fallback = None   # Transformers-based fallback
+        self._last_prompt: Optional[str] = None
+        self._last_raw_output: Optional[str] = None
+
+    @property
+    def last_prompt(self) -> Optional[str]:
+        """The prompt used in the most recent generate() call."""
+        return self._last_prompt
+
+    @property
+    def last_raw_output(self) -> Optional[str]:
+        """The raw VLM text output from the most recent generate() call."""
+        return self._last_raw_output
 
     def generate(
         self,
@@ -59,6 +71,8 @@ class VLMPrimitiveGenerator:
         self._lazy_init()
 
         prompt = format_prompt(object_registry, task_instruction)
+        self._last_prompt = prompt
+        self._last_raw_output = None
         last_error: Optional[str] = None
 
         for attempt in range(self.config.max_retries):
@@ -278,6 +292,15 @@ class VLMPrimitiveGenerator:
         output_text = self._fallback_processor.batch_decode(
             generated_ids, skip_special_tokens=True
         )[0]
+
+        # Store and log raw output for debugging
+        self._last_raw_output = output_text
+        logger.info(f"Raw VLM output ({len(output_text)} chars):")
+        # Log first 2000 chars to avoid flooding
+        for line in output_text[:2000].split("\n"):
+            logger.info(f"  VLM> {line}")
+        if len(output_text) > 2000:
+            logger.info(f"  VLM> ... ({len(output_text) - 2000} more chars)")
 
         result_dict = _extract_json(output_text)
         return SketchPrimitives(**result_dict)

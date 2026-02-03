@@ -607,6 +607,19 @@ def run_pipeline(
             logger.error(f"  Generation failed after {elapsed:.1f}s: {e}")
             continue
 
+        # Save VLM prompt and raw output for debugging
+        if not use_mock:
+            if generator.last_prompt:
+                prompt_path = out / f"vlm_prompt_{cam_name}.txt"
+                with open(prompt_path, "w") as f:
+                    f.write(generator.last_prompt)
+                logger.info(f"  Saved VLM prompt: {prompt_path.name}")
+            if generator.last_raw_output:
+                raw_path = out / f"vlm_raw_output_{cam_name}.txt"
+                with open(raw_path, "w") as f:
+                    f.write(generator.last_raw_output)
+                logger.info(f"  Saved VLM raw output: {raw_path.name}")
+
         # Log each primitive for visibility
         for i, prim in enumerate(primitives.primitives):
             prim_dict = prim.model_dump()

@@ -19,80 +19,94 @@ that the robot's planned trajectory matches the task intent.
 
 ## Detected Objects
 
-The following objects have been detected in the scene. Use these object IDs \
-when specifying object-relative positions.
+The following objects have been detected in the scene with their bounding boxes. \
+You MUST use these exact object IDs in your object_relative positions.
 
 {object_registry_formatted}
 
-## Primitive Vocabulary
+## Primitive Types
 
-You may ONLY use these three primitive types:
+### ARROW - directed motion between two DIFFERENT locations
+- type: "arrow"
+- start: Position (where motion begins)
+- end: Position (where motion ends — MUST be different from start)
+- waypoints: list of Position (optional, default [])
+- step: integer >= 1
 
-### ARROW
-Represents directed end-effector motion from one point to another.
-- type: "arrow" (required)
-- start: Position - motion origin point (required)
-- end: Position - motion destination point (required)
-- waypoints: List of Position - intermediate points for curved paths (optional, default [])
-- step: Integer >= 1 - temporal ordering (required)
+### CIRCLE - marks a key location
+- type: "circle"
+- center: Position
+- radius: float in [0.02, 0.06]
+- purpose: one of "grasp_point", "release_point", "contact", "rotation_pivot", "target_location"
+- step: integer >= 1
 
-### CIRCLE
-Marks a point of interest in the scene.
-- type: "circle" (required)
-- center: Position - center of the circle (required)
-- radius: Float in [0.02, 0.06] - circle size as proportion of image (required)
-- purpose: One of "grasp_point", "release_point", "contact", "rotation_pivot", "target_location" (required)
-- step: Integer >= 1 - temporal ordering (required)
+### GRIPPER - gripper state change
+- type: "gripper"
+- position: Position
+- action: "open" or "close"
+- step: integer >= 1
 
-### GRIPPER
-Indicates a gripper state change at a specific location.
-- type: "gripper" (required)
-- position: Position - location of state change (required)
-- action: "open" or "close" (required)
-- step: Integer >= 1 - temporal ordering (required)
+## Position Types
 
-## Position Specification
+You MUST use "object_relative" positions when referencing any detected object. \
+Only use "absolute" for free-space waypoints not near any object.
 
-### Absolute Position (for free-space waypoints only)
+Object-relative position (REQUIRED for any location on/near an object):
+{{"type": "object_relative", "object_id": "<id from above>", "anchor": "<anchor>", "offset": [dx, dy]}}
+
+Anchors: "center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"
+
+Absolute position (ONLY for free-space waypoints):
 {{"type": "absolute", "coords": [x, y]}}
-- Coordinates normalized to [0.0, 1.0], origin top-left
+Coordinates in [0.0, 1.0], origin at top-left.
 
-### Object-Relative Position (PREFERRED for all object interactions)
-{{"type": "object_relative", "object_id": "...", "anchor": "...", "offset": [dx, dy]}}
-- object_id: Must match an ID from Detected Objects
-- anchor: One of "center", "top", "bottom", "left", "right", "top_left", \
-"top_right", "bottom_left", "bottom_right"
-- offset: Optional displacement, default [0.0, 0.0]
+## CRITICAL RULES
 
-IMPORTANT: Use object-relative positions whenever the location involves a \
-detected object.
+1. Arrow start and end MUST be at DIFFERENT locations. An arrow from an object to itself is INVALID.
+2. The approach arrow MUST start at the "gripper" object and end at the target object.
+3. You MUST use "object_relative" positions (with object_id from the Detected Objects list) for any position on or near a detected object.
+4. Do NOT use absolute coordinates for positions that could reference a detected object.
+
+## Example
+
+For task "pick up the red_block and place it on the plate" with objects gripper, red_block, plate:
+
+{{"primitives": [
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "red_block", "anchor": "top", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "radius": 0.04, "purpose": "grasp_point", "step": 1}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "action": "close", "step": 2}},
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "waypoints": [{{"type": "absolute", "coords": [0.45, 0.20]}}], "step": 3}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "plate", "anchor": "center"}}, "radius": 0.05, "purpose": "release_point", "step": 4}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "action": "open", "step": 4}}
+]}}
+
+## Motion Patterns
+
+Choose the appropriate pattern based on the task:
+
+**Pick and place** (pick, move, place): approach arrow from gripper to source object, \
+grasp, transport arrow from source to destination, release.
+
+**Turn/rotate** (turn on, turn off, twist): approach arrow from gripper to the knob/dial, \
+contact/grasp at the knob, rotation arrow showing the turning motion direction.
+
+**Push** (push, slide): approach arrow from gripper to the object, contact, \
+push arrow showing the push direction.
+
+**Open/close** (open drawer, close door): approach arrow from gripper to the handle, \
+grasp at handle, pull/push arrow showing the opening/closing motion.
 
 ## Output Format
 
-Respond with ONLY a valid JSON object:
-{{"primitives": [...]}}
-
-Do not include any text before or after the JSON.
-
-## Temporal Ordering Guidelines
-
-- Step 1: Initial approach and marking the grasp point
-- Step 2: Gripper close (grasping)
-- Step 3: Transport motion (lifting and moving)
-- Step 4: Gripper open (releasing) and marking the release point
-
-Multiple primitives may share the same step number if they occur simultaneously.
+Respond with ONLY valid JSON. No text before or after.
 
 ## Task
 
 Instruction: {task_instruction}
 
-Analyze the scene and the task instruction. Specify the primitives needed to \
-visualize the complete end-effector motion path, including:
-1. Where the gripper must go (approach motion)
-2. What it must grasp (grasp point and gripper close)
-3. Where it must transport the object (transport motion)
-4. Where it must release (release point and gripper open)\
+Now analyze the image and specify primitives to visualize this task. \
+Remember: arrows must connect DIFFERENT locations, and you MUST use \
+object_relative positions with the exact object IDs listed above.\
 """
 
 
