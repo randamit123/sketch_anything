@@ -18,7 +18,7 @@ class LiberoConfig:
     """LIBERO environment settings."""
 
     camera_names: List[str] = field(
-        default_factory=lambda: ["agentview", "robot0_eye_in_hand"]
+        default_factory=lambda: ["agentview", "robot0_eye_in_hand", "frontview"]
     )
     image_width: int = 256
     image_height: int = 256

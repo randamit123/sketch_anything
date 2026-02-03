@@ -92,7 +92,7 @@ def _resolve_bddl_path(bddl_basename: str) -> str:
     return ""
 
 
-def load_libero_env(hdf5_path: str):
+def load_libero_env(hdf5_path: str, camera_names=None):
     """Load a LIBERO environment from an HDF5 demo file.
 
     Reads env_args and bddl_file_name from the HDF5 attributes and
@@ -200,6 +200,13 @@ def load_libero_env(hdf5_path: str):
     # Override camera sizes to 256x256 for consistency
     env_kwargs["camera_heights"] = 256
     env_kwargs["camera_widths"] = 256
+
+    # Override camera_names so LIBERO generates observations for all requested
+    # cameras. The HDF5 env_kwargs typically only lists agentview and
+    # robot0_eye_in_hand, but frontview (and others) are defined in the
+    # MuJoCo scene by _setup_camera() and can be activated here.
+    if camera_names is not None:
+        env_kwargs["camera_names"] = camera_names
 
     logger.info(f"Task: {task_instruction}")
     logger.info(f"BDDL: {env_kwargs['bddl_file_name']}")
@@ -393,6 +400,7 @@ def run_pipeline(
     use_llm: bool = True,
     model_path: str = None,
     llm_model_path: str = None,
+    render_scale: int = 2,
 ):
     """Run the full sketch annotation pipeline on a LIBERO demo.
 
@@ -417,6 +425,7 @@ def run_pipeline(
         use_llm: If True, use LLM-based object resolution (default True).
         model_path: Local path to VLM model weights (overrides default HF name).
         llm_model_path: Local path to LLM resolver model weights.
+        render_scale: Upscale factor for rendered images (default 2).
     """
     from sketch_anything.config import Config
     from sketch_anything.registry.builder import build_object_registry
@@ -430,13 +439,13 @@ def run_pipeline(
     out.mkdir(parents=True, exist_ok=True)
 
     if camera_names is None:
-        camera_names = ["agentview", "robot0_eye_in_hand"]
+        camera_names = ["agentview", "robot0_eye_in_hand", "frontview"]
 
     # ---- 1. Load environment ----
     logger.info("=" * 60)
     logger.info("PIPELINE START")
     logger.info("=" * 60)
-    env, task_instruction, env_args_raw = load_libero_env(hdf5_path)
+    env, task_instruction, env_args_raw = load_libero_env(hdf5_path, camera_names=camera_names)
     initial_state, actions = load_demo_actions(hdf5_path, demo_index)
 
     # ---- 2. Restore initial state ----
@@ -568,7 +577,7 @@ def run_pipeline(
     )
 
     generator = VLMPrimitiveGenerator(vlm_config)
-    render_config = RenderConfig()  # legend disabled by default now
+    render_config = RenderConfig(render_scale=render_scale)
 
     all_primitives = {}
 
@@ -745,7 +754,7 @@ def main():
     )
     parser.add_argument(
         "--cameras", nargs="*", default=None,
-        help="Camera names (default: agentview robot0_eye_in_hand)",
+        help="Camera names (default: agentview robot0_eye_in_hand frontview)",
     )
     parser.add_argument(
         "--fps", type=int, default=20,
@@ -771,6 +780,10 @@ def main():
         "--llm-model-path", default=None,
         help="Local path to LLM resolver model weights (e.g. ~/models/Qwen2.5-1.5B-Instruct)",
     )
+    parser.add_argument(
+        "--render-scale", type=int, default=2,
+        help="Upscale factor for rendered images (default: 2). Use 1 for native resolution.",
+    )
     args = parser.parse_args()
 
     # Set GPU before any torch/CUDA imports
@@ -789,6 +802,7 @@ def main():
         use_llm=not args.no_llm,
         model_path=args.model_path,
         llm_model_path=args.llm_model_path,
+        render_scale=args.render_scale,
     )
 
 

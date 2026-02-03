@@ -31,6 +31,7 @@ def rgb_to_bgr(color: Tuple[int, int, int]) -> Tuple[int, int, int]:
 class RenderConfig:
     """Configuration for the deterministic primitive renderer."""
 
+    render_scale: int = 2  # Upscale factor for rendering (1=native, 2=2x, etc.)
     arrow_thickness: int = 3
     arrow_tip_length: float = 0.15
     waypoint_radius: int = 4

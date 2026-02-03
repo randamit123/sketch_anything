@@ -41,7 +41,8 @@ def render_primitives(
         config: Rendering parameters. Uses defaults if None.
 
     Returns:
-        RGB image array with primitives rendered, same shape as input.
+        RGB image array with primitives rendered. If render_scale > 1,
+        the output will be larger than the input.
     """
     if config is None:
         config = RenderConfig()
@@ -49,11 +50,33 @@ def render_primitives(
     # Work in BGR for OpenCV
     canvas = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
     h, w = canvas.shape[:2]
+
+    # Upscale image if render_scale > 1
+    scale = config.render_scale
+    if scale > 1:
+        new_w, new_h = w * scale, h * scale
+        canvas = cv2.resize(canvas, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        h, w = new_h, new_w
+
     line_type = cv2.LINE_AA if config.use_antialiasing else cv2.LINE_8
+
+    # Create a scaled config for rendering (scale pixel-unit parameters)
+    from dataclasses import replace
+    scaled_config = replace(
+        config,
+        arrow_thickness=config.arrow_thickness * scale,
+        waypoint_radius=config.waypoint_radius * scale,
+        circle_stroke_width=config.circle_stroke_width * scale,
+        circle_center_radius=config.circle_center_radius * scale,
+        gripper_marker_size=config.gripper_marker_size * scale,
+        bbox_thickness=config.bbox_thickness * scale,
+        label_font_scale=config.label_font_scale * scale,
+        label_thickness=max(1, config.label_thickness * scale),
+    )
 
     # --- Object bounding boxes + labels ---
     if config.draw_object_bboxes and object_registry:
-        _draw_object_bboxes(canvas, object_registry, w, h, config, line_type)
+        _draw_object_bboxes(canvas, object_registry, w, h, scaled_config, line_type)
 
     # --- Primitives ---
     all_steps = sorted({p.step for p in primitives.primitives})
@@ -70,23 +93,23 @@ def render_primitives(
         grippers = [p for p in step_prims if isinstance(p, GripperPrimitive)]
 
         for c in circles:
-            _render_circle(canvas, c, object_registry, w, h, color_bgr, config, line_type)
-            if config.draw_labels:
-                _label_circle(canvas, c, object_registry, w, h, color_bgr, config, line_type)
+            _render_circle(canvas, c, object_registry, w, h, color_bgr, scaled_config, line_type)
+            if scaled_config.draw_labels:
+                _label_circle(canvas, c, object_registry, w, h, color_bgr, scaled_config, line_type)
 
         for a in arrows:
-            _render_arrow(canvas, a, object_registry, w, h, color_bgr, config, line_type)
-            if config.draw_labels:
-                _label_arrow(canvas, a, object_registry, w, h, color_bgr, config, line_type)
+            _render_arrow(canvas, a, object_registry, w, h, color_bgr, scaled_config, line_type)
+            if scaled_config.draw_labels:
+                _label_arrow(canvas, a, object_registry, w, h, color_bgr, scaled_config, line_type)
 
         for g in grippers:
-            _render_gripper(canvas, g, object_registry, w, h, color_bgr, config, line_type)
-            if config.draw_labels:
-                _label_gripper(canvas, g, object_registry, w, h, color_bgr, config, line_type)
+            _render_gripper(canvas, g, object_registry, w, h, color_bgr, scaled_config, line_type)
+            if scaled_config.draw_labels:
+                _label_gripper(canvas, g, object_registry, w, h, color_bgr, scaled_config, line_type)
 
     # --- Legend ---
-    if config.draw_legend and primitives.primitives:
-        _draw_legend(canvas, primitives, config)
+    if scaled_config.draw_legend and primitives.primitives:
+        _draw_legend(canvas, primitives, scaled_config)
 
     # Convert back to RGB
     return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)

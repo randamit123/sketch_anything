@@ -29,8 +29,8 @@ You MUST use these exact object IDs in your object_relative positions.
 ### ARROW - directed motion between two DIFFERENT locations
 - type: "arrow"
 - start: Position (where motion begins)
-- end: Position (where motion ends — MUST be different from start)
-- waypoints: list of Position (optional, default [])
+- end: Position (where motion ends — MUST be a different location from start)
+- waypoints: list of Position (intermediate points for curved paths)
 - step: integer >= 1
 
 ### CIRCLE - marks a key location
@@ -52,7 +52,7 @@ You MUST use "object_relative" positions when referencing any detected object. \
 Only use "absolute" for free-space waypoints not near any object.
 
 Object-relative position (REQUIRED for any location on/near an object):
-{{"type": "object_relative", "object_id": "<id from above>", "anchor": "<anchor>", "offset": [dx, dy]}}
+{{"type": "object_relative", "object_id": "<id>", "anchor": "<anchor>", "offset": [dx, dy]}}
 
 Anchors: "center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"
 
@@ -62,14 +62,21 @@ Coordinates in [0.0, 1.0], origin at top-left.
 
 ## CRITICAL RULES
 
-1. Arrow start and end MUST be at DIFFERENT locations. An arrow from an object to itself is INVALID.
-2. The approach arrow MUST start at the "gripper" object and end at the target object.
-3. You MUST use "object_relative" positions (with object_id from the Detected Objects list) for any position on or near a detected object.
-4. Do NOT use absolute coordinates for positions that could reference a detected object.
+1. Arrow start and end MUST reference DIFFERENT objects or different anchors. An arrow that starts and ends at the same position is INVALID.
+2. The first approach arrow MUST start at the "gripper" object and end at the target object.
+3. You MUST use "object_relative" positions (with object_id from the Detected Objects list) for any position on or near a detected object. Do NOT use absolute coordinates for these.
+4. Use non-zero offsets to position precisely. For approach arrows, end at anchor "top" with offset [0.0, -0.02] to land above the target. For release, use offset [0.0, -0.05] above the destination.
+5. For transport arrows, include at least one absolute waypoint above the start position to show the lift arc.
+6. Primitives that happen simultaneously MUST share the same step number. The approach arrow and the grasp/contact circle share the same step. The release circle and gripper open share the same step.
 
-## Example
+## Motion Patterns with Examples
 
-For task "pick up the red_block and place it on the plate" with objects gripper, red_block, plate:
+Choose the pattern that matches the task instruction. Each example shows the complete JSON output.
+
+### Pattern 1: Pick and Place
+Keywords: pick, place, put, move, put on, put in
+
+Task "pick up the red_block and place it on the plate" with objects gripper, red_block, plate:
 
 {{"primitives": [
   {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "red_block", "anchor": "top", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
@@ -80,33 +87,57 @@ For task "pick up the red_block and place it on the plate" with objects gripper,
   {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "action": "open", "step": 4}}
 ]}}
 
-## Motion Patterns
+### Pattern 2: Turn / Rotate
+Keywords: turn on, turn off, twist, rotate, switch
 
-Choose the appropriate pattern based on the task:
+Task "turn on the stove" with objects gripper, stove, stove_knob:
 
-**Pick and place** (pick, move, place): approach arrow from gripper to source object, \
-grasp, transport arrow from source to destination, release.
+{{"primitives": [
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "top", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "center"}}, "radius": 0.03, "purpose": "contact", "step": 1}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "center"}}, "action": "close", "step": 2}},
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "right"}}, "end": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "left"}}, "waypoints": [{{"type": "object_relative", "object_id": "stove_knob", "anchor": "top", "offset": [0.0, -0.04]}}], "step": 3}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "center"}}, "radius": 0.03, "purpose": "rotation_pivot", "step": 3}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "stove_knob", "anchor": "center"}}, "action": "open", "step": 4}}
+]}}
 
-**Turn/rotate** (turn on, turn off, twist): approach arrow from gripper to the knob/dial, \
-contact/grasp at the knob, rotation arrow showing the turning motion direction.
+### Pattern 3: Push / Slide
+Keywords: push, slide
 
-**Push** (push, slide): approach arrow from gripper to the object, contact, \
-push arrow showing the push direction.
+Task "push the plate to the front_of_stove" with objects gripper, plate, front_of_stove:
 
-**Open/close** (open drawer, close door): approach arrow from gripper to the handle, \
-grasp at handle, pull/push arrow showing the opening/closing motion.
+{{"primitives": [
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "plate", "anchor": "top", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "plate", "anchor": "center"}}, "radius": 0.04, "purpose": "contact", "step": 1}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "plate", "anchor": "center"}}, "action": "close", "step": 2}},
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "plate", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "front_of_stove", "anchor": "center", "offset": [0.0, -0.03]}}, "waypoints": [], "step": 3}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "front_of_stove", "anchor": "center"}}, "radius": 0.05, "purpose": "target_location", "step": 3}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "front_of_stove", "anchor": "center"}}, "action": "open", "step": 4}}
+]}}
+
+### Pattern 4: Open / Close
+Keywords: open, close, pull
+
+Task "open the top_drawer" with objects gripper, top_drawer:
+
+{{"primitives": [
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
+  {{"type": "circle", "center": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center"}}, "radius": 0.04, "purpose": "grasp_point", "step": 1}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center"}}, "action": "close", "step": 2}},
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center", "offset": [0.0, -0.15]}}, "waypoints": [], "step": 3}},
+  {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "top_drawer", "anchor": "center", "offset": [0.0, -0.15]}}, "action": "open", "step": 4}}
+]}}
 
 ## Output Format
 
-Respond with ONLY valid JSON. No text before or after.
+Respond with ONLY valid JSON matching the format above. No text before or after the JSON.
 
 ## Task
 
 Instruction: {task_instruction}
 
-Now analyze the image and specify primitives to visualize this task. \
-Remember: arrows must connect DIFFERENT locations, and you MUST use \
-object_relative positions with the exact object IDs listed above.\
+Analyze the image carefully. Identify which pattern best matches the task, then specify the complete set of primitives. \
+Use the exact object IDs from Detected Objects above. Use non-zero offsets and waypoints as shown in the examples.\
 """
 
 
