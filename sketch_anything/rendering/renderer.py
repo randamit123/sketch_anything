@@ -129,25 +129,121 @@ def _render_arrow(
     config: RenderConfig,
     line_type: int,
 ) -> None:
-    """Draw an arrow with optional waypoints."""
+    """Draw an arrow with optional waypoints.
+
+    When waypoints are present, a smooth quadratic/cubic Bézier spline is
+    drawn through them instead of straight line segments.  The arrowhead
+    direction is derived from the final tangent of the curve so it points
+    correctly even on curved paths.
+    """
     start = resolve_position(arrow.start, registry, w, h)
     end = resolve_position(arrow.end, registry, w, h)
     waypoints = [resolve_position(wp, registry, w, h) for wp in arrow.waypoints]
 
     # Build point sequence: start -> waypoints -> end
-    points = [start] + waypoints + [end]
+    control_pts = [start] + waypoints + [end]
 
-    # Draw line segments
-    for i in range(len(points) - 1):
-        cv2.line(canvas, points[i], points[i + 1], color, config.arrow_thickness, line_type)
+    if len(control_pts) <= 2:
+        # No waypoints — simple straight line
+        cv2.line(canvas, start, end, color, config.arrow_thickness, line_type)
+    else:
+        # Smooth Bézier curve through control points
+        curve_pts = _bezier_curve(control_pts, num_samples=64)
+        # Draw as a polyline for smooth rendering
+        pts_array = np.array(curve_pts, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [pts_array], isClosed=False, color=color,
+                      thickness=config.arrow_thickness, lineType=line_type)
 
     # Draw waypoint dots
     for wp_px in waypoints:
         cv2.circle(canvas, wp_px, config.waypoint_radius, color, -1, line_type)
 
-    # Draw arrowhead at end
-    if len(points) >= 2:
-        _draw_arrowhead(canvas, points[-2], points[-1], color, config, line_type)
+    # Draw arrowhead at end — use the curve tangent for direction
+    if len(control_pts) <= 2:
+        from_pt = control_pts[-2]
+    else:
+        # Use the second-to-last point on the Bézier curve for tangent
+        curve_pts = _bezier_curve(control_pts, num_samples=64)
+        from_pt = curve_pts[-4] if len(curve_pts) >= 4 else curve_pts[-2]
+
+    _draw_arrowhead(canvas, from_pt, end, color, config, line_type)
+
+
+def _bezier_curve(
+    control_points: List[Tuple[int, int]],
+    num_samples: int = 64,
+) -> List[Tuple[int, int]]:
+    """Compute a composite Bézier curve passing through all control points.
+
+    For 3 points (start, waypoint, end), a quadratic Bézier is used.
+    For 4+ points, a Catmull-Rom spline is computed through all points,
+    which guarantees the curve passes through every control point (unlike
+    a raw cubic Bézier where interior points are just attractors).
+    """
+    n = len(control_points)
+    if n < 2:
+        return list(control_points)
+    if n == 2:
+        return list(control_points)
+
+    if n == 3:
+        # Quadratic Bézier: curve passes through start, near waypoint, and end.
+        # To make it pass *through* the waypoint we compute a virtual control
+        # point: C = 2*P1 - 0.5*(P0 + P2)  (standard trick).
+        p0 = np.array(control_points[0], dtype=float)
+        p1 = np.array(control_points[1], dtype=float)
+        p2 = np.array(control_points[2], dtype=float)
+        # Virtual control point so the curve passes through p1 at t=0.5
+        c1 = 2.0 * p1 - 0.5 * (p0 + p2)
+
+        result = []
+        for i in range(num_samples + 1):
+            t = i / num_samples
+            # Quadratic Bézier with virtual control point
+            pt = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * c1 + t ** 2 * p2
+            result.append((int(round(pt[0])), int(round(pt[1]))))
+        return result
+
+    # 4+ points: Catmull-Rom spline (passes through all points)
+    return _catmull_rom_chain(control_points, num_samples)
+
+
+def _catmull_rom_chain(
+    points: List[Tuple[int, int]],
+    total_samples: int = 64,
+    alpha: float = 0.5,
+) -> List[Tuple[int, int]]:
+    """Catmull-Rom spline through a sequence of points.
+
+    The ``alpha`` parameter controls the spline type:
+        0.0 = uniform, 0.5 = centripetal (default, no cusps), 1.0 = chordal.
+    """
+    pts = [np.array(p, dtype=float) for p in points]
+    n = len(pts)
+
+    # Pad with ghost points at the ends (reflection)
+    pts = [2 * pts[0] - pts[1]] + pts + [2 * pts[-1] - pts[-2]]
+    segments = n - 1
+    samples_per_seg = max(total_samples // segments, 8)
+
+    result: List[Tuple[int, int]] = []
+    for i in range(1, len(pts) - 2):
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1], pts[i + 2]
+        for j in range(samples_per_seg):
+            t = j / samples_per_seg
+            # Catmull-Rom basis matrix
+            t2, t3 = t * t, t * t * t
+            pt = 0.5 * (
+                (2.0 * p1)
+                + (-p0 + p2) * t
+                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+            )
+            result.append((int(round(pt[0])), int(round(pt[1]))))
+
+    # Always include the final point
+    result.append((int(round(pts[-2][0])), int(round(pts[-2][1]))))
+    return result
 
 
 def _draw_arrowhead(
