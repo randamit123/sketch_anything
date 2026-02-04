@@ -42,9 +42,9 @@ ViewObjectRegistry = Dict[str, dict]
 # ---------------------------------------------------------------------------
 LIBERO_OBJECT_MAPPING: Dict[str, List[str]] = {
     # Containers
-    "bowl": ["bowl", "akita_black_bowl"],
+    "bowl": ["akita_black_bowl_1", "bowl", "akita_black_bowl"],
     "blue bowl": ["akita_black_bowl_1", "bowl_blue"],
-    "plate": ["plate", "plate_1"],
+    "plate": ["plate_1", "plate"],
     "basket": ["basket"],
     "tray": ["tray"],
     # Blocks
@@ -56,21 +56,30 @@ LIBERO_OBJECT_MAPPING: Dict[str, List[str]] = {
     "mug": ["mug", "coffee_mug"],
     "cup": ["cup"],
     "butter": ["butter"],
-    "cream cheese": ["cream_cheese"],
+    "cream cheese": ["cream_cheese_1", "cream_cheese"],
     "milk": ["milk"],
     "orange juice": ["orange_juice"],
+    "wine bottle": ["wine_bottle_1", "wine_bottle"],
     # Furniture
+    "rack": ["wine_rack_1", "wine_rack"],
+    "wine rack": ["wine_rack_1", "wine_rack"],
     "drawer": ["drawer", "top_drawer", "middle_drawer", "bottom_drawer"],
     "top drawer": ["top_drawer"],
     "middle drawer": ["middle_drawer"],
     "bottom drawer": ["bottom_drawer"],
-    "cabinet": ["cabinet_door", "cabinet"],
+    "cabinet": ["wooden_cabinet_1", "cabinet_door", "cabinet"],
     "door": ["door", "microwave_door"],
-    # Appliances -- note: "stove" with "turn on" needs the knob, handled
-    # by TASK_EXTRA_OBJECTS below.
+    # Appliances
+    # NOTE: "stove" mapping depends on the task verb — see
+    # TASK_VERB_BODY_OVERRIDES below. The default mapping here uses the MAIN
+    # surface body (for "put on" tasks). "turn on" tasks override to the knob
+    # via TASK_EXTRA_OBJECTS.
     "microwave": ["microwave"],
-    "stove": ["flat_stove_1_main", "stove", "flat_stove"],
+    "stove": ["flat_stove_1", "flat_stove_1_main", "stove", "flat_stove"],
     "stove knob": ["flat_stove_1_button", "flat_stove_1_knob", "stove_knob", "knob", "button"],
+    # Regions / landmarks
+    "front of stove": ["flat_stove_1", "flat_stove_1_main"],
+    "front_of_stove": ["flat_stove_1", "flat_stove_1_main"],
 }
 
 # Extra objects to include based on task verb + object combinations.
@@ -83,6 +92,16 @@ TASK_EXTRA_OBJECTS: Dict[tuple, List[str]] = {
     ("close", "microwave"): ["microwave door"],
     ("open", "cabinet"): ["cabinet door"],
     ("close", "cabinet"): ["cabinet door"],
+}
+
+# Task-verb-aware body overrides for the static resolver.
+# When the task verb matches, the object's candidate list is replaced with
+# these bodies INSTEAD of the default LIBERO_OBJECT_MAPPING entry.
+# This ensures "put on stove" → stove surface while "turn on stove" → knob.
+TASK_VERB_BODY_OVERRIDES: Dict[tuple, List[str]] = {
+    # "turn on the stove" → the knob is the primary interaction target
+    ("turn on", "stove"): ["flat_stove_1_button", "flat_stove_1_knob", "stove_knob"],
+    ("turn off", "stove"): ["flat_stove_1_button", "flat_stove_1_knob", "stove_knob"],
 }
 
 # Body names to try for the robot gripper.
@@ -170,19 +189,36 @@ The objects mentioned in the task are: {object_names}
 The simulator has the following body names available:
 {body_list}
 
+IMPORTANT: The task verb determines WHICH body to pick for each object:
+
+- "put on", "place on", "put in" → the object is a DESTINATION SURFACE. \
+Pick the LARGEST / MAIN body (e.g. "flat_stove_1_main" for the stove cooking \
+surface, NOT "flat_stove_1_button" which is a tiny knob). The robot needs to \
+place something ON TOP of this object, so it must be the surface/container body.
+
+- "turn on", "turn off", "twist", "rotate" → the object is being MANIPULATED. \
+Pick the SPECIFIC INTERACTIVE PART (e.g. a knob, button, handle, or switch). \
+Also include the main body as a separate entry.
+
+- "open", "close", "pull" → pick the MOVABLE PART (e.g. a door, drawer handle).
+
+- "pick up", "push", "slide" → pick the MAIN body of the object being moved.
+
 For EACH object name, pick the single best matching body name from the list \
-above. Also identify which body is the specific part the robot must interact \
-with (e.g. for "turn on the stove" the robot interacts with the knob, not \
-the base).
+above based on these rules.
 
 Return ONLY a JSON object mapping each object name to its best matching body \
-name. If an object has a more specific sub-part the robot must interact with, \
-include that as a separate entry. Example:
+name. Example for "put the bowl on the stove":
 
-{{"stove": "flat_stove_1_base", "stove knob": "flat_stove_1_knob_joint_link"}}
+{{"bowl": "akita_black_bowl_1", "stove": "flat_stove_1_main"}}
 
-Include ONLY object names that appear in the task or are sub-parts the robot \
-needs. Do NOT include robot/gripper bodies. Return valid JSON only, no other text.
+Example for "turn on the stove":
+
+{{"stove": "flat_stove_1_main", "stove knob": "flat_stove_1_button"}}
+
+Include ONLY object names that appear in the task or are relevant sub-parts. \
+Do NOT include robot/gripper bodies. Prefer body names containing "main", \
+"base", or "body" for destination surfaces. Return valid JSON only, no other text.
 """
 
 
@@ -375,7 +411,10 @@ def resolve_object_names(
         # Skip if the LLM already resolved this name (or a close variant)
         if name in resolved or name_key in resolved:
             continue
-        body = _resolve_single(name, available_bodies, objects_dict, fixtures_dict)
+        body = _resolve_single(
+            name, available_bodies, objects_dict, fixtures_dict,
+            task_instruction=task_instruction,
+        )
         if body is not None:
             resolved[name] = body
             logger.info(f"  '{name}' -> '{body}' (static/substring)")
@@ -402,9 +441,23 @@ def _resolve_single(
     available_bodies: Set[str],
     objects_dict: Optional[dict],
     fixtures_dict: Optional[dict],
+    task_instruction: str = "",
 ) -> Optional[str]:
     """Resolve a single object name to a MuJoCo body name."""
     name_lower = name.lower().strip()
+    task_lower = task_instruction.lower()
+
+    # 0. Check task-verb body overrides first (e.g. "turn on" + "stove" → knob)
+    for (verb, obj), candidates in TASK_VERB_BODY_OVERRIDES.items():
+        if verb in task_lower and obj == name_lower:
+            for candidate in candidates:
+                if candidate in available_bodies:
+                    logger.info(f"  '{name}' -> '{candidate}' (verb override: '{verb}')")
+                    return candidate
+                for body in available_bodies:
+                    if candidate in body or body in candidate:
+                        logger.info(f"  '{name}' -> '{body}' (verb override partial: '{verb}')")
+                        return body
 
     # 1. Try static mapping
     if name_lower in LIBERO_OBJECT_MAPPING:
@@ -513,6 +566,7 @@ def build_object_registry(
                 view_registry[obj_id] = {
                     "id": obj_id,
                     "label": natural_name,
+                    "mujoco_body": body_name,
                     "bbox": bbox,
                     "center": center,
                 }
