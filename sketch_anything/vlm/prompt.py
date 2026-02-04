@@ -63,10 +63,14 @@ Coordinates in [0.0, 1.0], origin at top-left.
 ## CRITICAL RULES
 
 1. Arrow start and end MUST reference DIFFERENT objects or different anchors. An arrow that starts and ends at the same position is INVALID.
-2. The first approach arrow MUST start at the "gripper" object and end at the target object.
+2. The first approach arrow MUST start at the "gripper" object and end at the target object. If NO "gripper" object is listed in Detected Objects (e.g. for an eye-in-hand camera view), start the approach arrow from an absolute position at the bottom-center of the image: {{"type": "absolute", "coords": [0.5, 1.0]}}.
 3. You MUST use "object_relative" positions (with object_id from the Detected Objects list) for any position on or near a detected object. Do NOT use absolute coordinates for these.
 4. Use non-zero offsets to position precisely. For approach arrows, end at anchor "top" with offset [0.0, -0.02] to land above the target. For release, use offset [0.0, -0.05] above the destination.
-5. For transport arrows, include at least one absolute waypoint above the start position to show the lift arc.
+5. WAYPOINT PLACEMENT: For transport/move arrows between two objects, add one absolute waypoint to create a smooth lift arc. Compute the waypoint as follows:
+   - waypoint_x = midpoint between the start object center_x and end object center_x
+   - waypoint_y = min(start object center_y, end object center_y) minus 0.15 (i.e. well ABOVE both objects on screen, since y=0 is the top of the image)
+   - Example: if source center is [0.44, 0.43] and destination center is [0.19, 0.71], then waypoint = [(0.44+0.19)/2, min(0.43,0.71)-0.15] = [0.32, 0.28]
+   - The waypoint must be ABOVE (lower y) than both the start and end objects to show a lift arc.
 6. Primitives that happen simultaneously MUST share the same step number. The approach arrow and the grasp/contact circle share the same step. The release circle and gripper open share the same step.
 
 ## Motion Patterns with Examples
@@ -76,13 +80,15 @@ Choose the pattern that matches the task instruction. Each example shows the com
 ### Pattern 1: Pick and Place
 Keywords: pick, place, put, move, put on, put in
 
-Task "pick up the red_block and place it on the plate" with objects gripper, red_block, plate:
+Task "pick up the red_block and place it on the plate" with objects gripper (center [0.45, 0.21]), red_block (center [0.32, 0.46]), plate (center [0.59, 0.42]):
+
+Waypoint calculation for transport arrow: midpoint_x = (0.32+0.59)/2 = 0.46, waypoint_y = min(0.46, 0.42) - 0.15 = 0.27. So waypoint = [0.46, 0.27].
 
 {{"primitives": [
   {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "gripper", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "red_block", "anchor": "top", "offset": [0.0, -0.02]}}, "waypoints": [], "step": 1}},
   {{"type": "circle", "center": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "radius": 0.04, "purpose": "grasp_point", "step": 1}},
   {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "action": "close", "step": 2}},
-  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "waypoints": [{{"type": "absolute", "coords": [0.45, 0.20]}}], "step": 3}},
+  {{"type": "arrow", "start": {{"type": "object_relative", "object_id": "red_block", "anchor": "center"}}, "end": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "waypoints": [{{"type": "absolute", "coords": [0.46, 0.27]}}], "step": 3}},
   {{"type": "circle", "center": {{"type": "object_relative", "object_id": "plate", "anchor": "center"}}, "radius": 0.05, "purpose": "release_point", "step": 4}},
   {{"type": "gripper", "position": {{"type": "object_relative", "object_id": "plate", "anchor": "center", "offset": [0.0, -0.05]}}, "action": "open", "step": 4}}
 ]}}
@@ -137,7 +143,9 @@ Respond with ONLY valid JSON matching the format above. No text before or after 
 Instruction: {task_instruction}
 
 Analyze the image carefully. Identify which pattern best matches the task, then specify the complete set of primitives. \
-Use the exact object IDs from Detected Objects above. Use non-zero offsets and waypoints as shown in the examples.\
+Use the exact object IDs from Detected Objects above. Use non-zero offsets as shown in the examples. \
+For transport arrows, compute a waypoint ABOVE both objects: waypoint_x = midpoint of source and destination center_x, \
+waypoint_y = min(source center_y, destination center_y) - 0.15. Use the object centers from Detected Objects to calculate this.\
 """
 
 

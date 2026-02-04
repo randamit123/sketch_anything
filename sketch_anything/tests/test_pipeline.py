@@ -114,9 +114,9 @@ class TestEndToEndMock:
         result = validate_primitives(primitives, REGISTRY)
         assert result.is_valid, f"Errors: {result.errors}"
 
-        # Render
+        # Render (default render_scale=2 doubles dimensions)
         annotated = render_primitives(image, primitives, REGISTRY)
-        assert annotated.shape == (256, 256, 3)
+        assert annotated.shape == (512, 512, 3)
         assert annotated.sum() > 0  # Something was drawn
 
 
@@ -124,7 +124,7 @@ class TestConfig:
     def test_default_config(self):
         config = Config.default()
         assert config.vlm.model_name == "Qwen/Qwen2.5-VL-7B-Instruct"
-        assert config.libero.camera_names == ["agentview", "robot0_eye_in_hand"]
+        assert config.libero.camera_names == ["agentview", "robot0_eye_in_hand", "frontview"]
         assert config.vlm.device == "cuda"
 
     def test_yaml_config(self):

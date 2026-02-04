@@ -113,7 +113,17 @@ class TestRenderPrimitives:
     def test_output_shape_matches_input(self):
         image = self._make_image()
         sp = SketchPrimitives(primitives=[])
+        # Default render_scale=2 doubles the output dimensions
         result = render_primitives(image, sp, REGISTRY)
+        assert result.shape == (512, 512, 3)
+        assert result.dtype == np.uint8
+
+    def test_output_shape_scale_1(self):
+        """With render_scale=1, output matches input dimensions."""
+        image = self._make_image()
+        sp = SketchPrimitives(primitives=[])
+        config = RenderConfig(render_scale=1)
+        result = render_primitives(image, sp, REGISTRY, config=config)
         assert result.shape == image.shape
         assert result.dtype == np.uint8
 
@@ -121,7 +131,7 @@ class TestRenderPrimitives:
         """With no primitives, only bounding boxes may be drawn (if enabled)."""
         image = self._make_image()
         sp = SketchPrimitives(primitives=[])
-        config = RenderConfig(draw_object_bboxes=False, draw_legend=False)
+        config = RenderConfig(render_scale=1, draw_object_bboxes=False, draw_legend=False)
         result = render_primitives(image, sp, REGISTRY, config=config)
         np.testing.assert_array_equal(result, image)
 
@@ -226,7 +236,8 @@ class TestRenderPrimitives:
             ]
         })
         result = render_primitives(image, sp, REGISTRY)
-        assert result.shape == (256, 256, 3)
+        # Default render_scale=2 doubles the output dimensions
+        assert result.shape == (512, 512, 3)
         assert result.sum() > 0
         # Multiple colors should be present (at least green for step 1 and another)
         # Check green channel has non-trivial values

@@ -483,11 +483,24 @@ def build_object_registry(
 
     registries: Dict[str, ViewObjectRegistry] = {}
 
+    # Camera names where the gripper should be excluded from the registry.
+    # The eye-in-hand camera IS mounted on the gripper, so the gripper bbox
+    # covers the bottom half of the frame and produces misleading arrows.
+    _EXCLUDE_GRIPPER_CAMERAS = {"robot0_eye_in_hand"}
+
     for camera_name in camera_names:
         K, R, t = get_camera_matrices(sim, camera_name, image_width, image_height)
         view_registry: ViewObjectRegistry = {}
 
         for natural_name, body_name in object_mapping.items():
+            # Skip gripper for eye-in-hand cameras
+            if natural_name == "gripper" and camera_name in _EXCLUDE_GRIPPER_CAMERAS:
+                logger.info(
+                    f"Excluding gripper from '{camera_name}' registry "
+                    f"(camera is mounted on gripper)"
+                )
+                continue
+
             try:
                 corners_3d = get_object_bbox_3d(sim, body_name)
                 bbox = compute_2d_bbox(corners_3d, K, R, t, image_width, image_height)
