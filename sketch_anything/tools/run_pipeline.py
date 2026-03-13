@@ -54,11 +54,36 @@ logging.basicConfig(
 logger = logging.getLogger("run_pipeline")
 
 
+# ---------------------------------------------------------------------------
+# BDDL filename corrections
+# ---------------------------------------------------------------------------
+# Some HDF5 demo files were recorded with a different BDDL naming scheme than
+# the one used in the current LIBERO package.  The correct BDDL files exist on
+# disk under a different name.  This map translates stale stored names to their
+# correct counterparts so path resolution succeeds automatically.
+#
+# To add a new correction: append an entry here.
+# To debug a missing BDDL: run `python -m sketch_anything.tools.inspect_hdf5 --all`
+BDDL_NAME_MAP: dict[str, str] = {
+    "open_the_middle_layer_of_the_drawer.bddl":
+        "open_the_middle_drawer_of_the_cabinet.bddl",
+    "open_the_top_layer_of_the_drawer_and_put_the_bowl_inside.bddl":
+        "open_the_top_drawer_and_put_the_bowl_inside.bddl",
+    "put_the_bowl_on_the_top_of_the_drawer.bddl":
+        "put_the_bowl_on_top_of_the_cabinet.bddl",
+    "put_the_cream_cheese_on_the_bowl.bddl":
+        "put_the_cream_cheese_in_the_bowl.bddl",
+    "put_the_wine_bottle_on_the_top_of_the_drawer.bddl":
+        "put_the_wine_bottle_on_top_of_the_cabinet.bddl",
+}
+
+
 def _resolve_bddl_path(bddl_basename: str) -> str:
     """Resolve a BDDL filename to its full path on this machine.
 
-    Searches LIBERO's configured bddl_files directory for the file.
-    Falls back to a recursive glob if the LIBERO config is unavailable.
+    Applies BDDL_NAME_MAP corrections first, then searches LIBERO's configured
+    bddl_files directory.  Falls back to a recursive glob of the project's
+    LIBERO submodule if the LIBERO config is unavailable or wrong.
 
     Args:
         bddl_basename: Just the filename, e.g. "turn_on_the_stove.bddl".
@@ -66,16 +91,28 @@ def _resolve_bddl_path(bddl_basename: str) -> str:
     Returns:
         Absolute path to the BDDL file, or empty string if not found.
     """
+    # Apply known name corrections for HDF5 demos with stale BDDL filenames
+    if bddl_basename in BDDL_NAME_MAP:
+        corrected = BDDL_NAME_MAP[bddl_basename]
+        logger.info(f"BDDL name correction: '{bddl_basename}' → '{corrected}'")
+        bddl_basename = corrected
+
     # Try LIBERO's path config first
     try:
         from libero.libero import get_libero_path
         bddl_root = get_libero_path("bddl_files")
-        matches = glob.glob(
-            os.path.join(bddl_root, "**", bddl_basename), recursive=True
-        )
-        if matches:
-            logger.info(f"Resolved BDDL via LIBERO config: {matches[0]}")
-            return matches[0]
+        if not os.path.isdir(bddl_root):
+            logger.warning(
+                f"LIBERO config bddl_files path does not exist: {bddl_root}\n"
+                f"  Run: conda run -n libero python -m sketch_anything.tools.setup_libero_config"
+            )
+        else:
+            matches = glob.glob(
+                os.path.join(bddl_root, "**", bddl_basename), recursive=True
+            )
+            if matches:
+                logger.info(f"Resolved BDDL via LIBERO config: {matches[0]}")
+                return matches[0]
     except Exception as e:
         logger.warning(f"LIBERO path config unavailable: {e}")
 
@@ -92,7 +129,7 @@ def _resolve_bddl_path(bddl_basename: str) -> str:
     return ""
 
 
-def load_libero_env(hdf5_path: str, camera_names=None):
+def load_libero_env(hdf5_path: str, camera_names=None, bddl_file_override: str | None = None):
     """Load a LIBERO environment from an HDF5 demo file.
 
     Reads env_args and bddl_file_name from the HDF5 attributes and
@@ -108,6 +145,8 @@ def load_libero_env(hdf5_path: str, camera_names=None):
 
     Args:
         hdf5_path: Path to a LIBERO HDF5 demo file.
+        bddl_file_override: If provided, use this BDDL path instead of the
+            one stored in the HDF5.  Useful when the HDF5 stores a stale path.
 
     Returns:
         (env, task_instruction, env_args_raw) tuple.
@@ -146,24 +185,40 @@ def load_libero_env(hdf5_path: str, camera_names=None):
                 f"Keys available: {list(env_args_raw.keys())}"
             )
 
-    # The bddl_file_name stored in the HDF5 is often a relative path from
-    # the original machine (e.g. "chiliocosm/bddl_files/libero_goal/X.bddl").
-    # If it doesn't exist on this machine, resolve it via LIBERO's path config.
-    bddl_path = env_kwargs["bddl_file_name"]
-    if not os.path.exists(bddl_path):
-        bddl_basename = os.path.basename(bddl_path)
-        logger.info(
-            f"BDDL path not found: {bddl_path}. "
-            f"Resolving '{bddl_basename}' via LIBERO config..."
-        )
-        resolved = _resolve_bddl_path(bddl_basename)
-        if resolved:
-            env_kwargs["bddl_file_name"] = resolved
-        else:
+    # --bddl-file CLI override: skip resolution entirely and use the given path.
+    if bddl_file_override:
+        if not os.path.exists(bddl_file_override):
             raise FileNotFoundError(
-                f"Cannot find BDDL file '{bddl_basename}'. "
-                f"Stored path was: {bddl_path}"
+                f"--bddl-file path does not exist: {bddl_file_override}"
             )
+        logger.info(f"Using --bddl-file override: {bddl_file_override}")
+        env_kwargs["bddl_file_name"] = bddl_file_override
+
+    else:
+        # The bddl_file_name stored in the HDF5 is often a relative path from
+        # the original machine (e.g. "chiliocosm/bddl_files/libero_goal/X.bddl").
+        # If it doesn't exist on this machine, resolve it via LIBERO's path config.
+        bddl_path = env_kwargs["bddl_file_name"]
+        if not os.path.exists(bddl_path):
+            bddl_basename = os.path.basename(bddl_path)
+            logger.warning(
+                f"BDDL path not found: {bddl_path}\n"
+                f"  Basename: {bddl_basename}\n"
+                f"  Resolving via LIBERO config and BDDL_NAME_MAP..."
+            )
+            resolved = _resolve_bddl_path(bddl_basename)
+            if resolved:
+                env_kwargs["bddl_file_name"] = resolved
+            else:
+                raise FileNotFoundError(
+                    f"Cannot find BDDL file '{bddl_basename}'.\n"
+                    f"  Stored path: {bddl_path}\n"
+                    f"  If this is a known naming mismatch, add an entry to BDDL_NAME_MAP\n"
+                    f"  in sketch_anything/tools/run_pipeline.py.\n"
+                    f"  Or use --bddl-file /path/to/correct.bddl to override directly.\n"
+                    f"  Run inspect_hdf5 for a full diagnosis:\n"
+                    f"    python -m sketch_anything.tools.inspect_hdf5 {hdf5_path}"
+                )
 
     # ControlEnv.__init__ builds controller_configs internally from the
     # "controller" parameter.  The HDF5 env_kwargs often also contains a
@@ -401,6 +456,7 @@ def run_pipeline(
     model_path: str = None,
     llm_model_path: str = None,
     render_scale: int = 2,
+    bddl_file_override: str | None = None,
 ):
     """Run the full sketch annotation pipeline on a LIBERO demo.
 
@@ -426,6 +482,8 @@ def run_pipeline(
         model_path: Local path to VLM model weights (overrides default HF name).
         llm_model_path: Local path to LLM resolver model weights.
         render_scale: Upscale factor for rendered images (default 2).
+        bddl_file_override: Override the BDDL file path from the HDF5. Useful
+            when the HDF5 stores a stale BDDL filename.
     """
     from sketch_anything.config import Config
     from sketch_anything.registry.builder import build_object_registry
@@ -445,7 +503,9 @@ def run_pipeline(
     logger.info("=" * 60)
     logger.info("PIPELINE START")
     logger.info("=" * 60)
-    env, task_instruction, env_args_raw = load_libero_env(hdf5_path, camera_names=camera_names)
+    env, task_instruction, env_args_raw = load_libero_env(
+        hdf5_path, camera_names=camera_names, bddl_file_override=bddl_file_override
+    )
     initial_state, actions = load_demo_actions(hdf5_path, demo_index)
 
     # ---- 2. Restore initial state ----
@@ -558,11 +618,11 @@ def run_pipeline(
         logger.info("  -> VLM is NOT being queried. Primitives are hard-coded templates.")
         logger.info("  -> To use real VLM inference, remove the --mock flag.")
     else:
-        logger.info("MODE: VLM inference (Qwen2.5-VL)")
+        logger.info("MODE: VLM inference (Qwen3-VL)")
         logger.info("  -> The VLM WILL be queried for each camera view.")
-        logger.info("  -> Model: Qwen/Qwen2.5-VL-7B-Instruct")
+        logger.info("  -> Model: Qwen/Qwen3-VL-8B-Instruct")
 
-    vlm_model = model_path if model_path else "Qwen/Qwen2.5-VL-7B-Instruct"
+    vlm_model = model_path if model_path else "Qwen/Qwen3-VL-8B-Instruct"
     if model_path:
         logger.info(f"Using local VLM model path: {model_path}")
 
@@ -589,10 +649,33 @@ def run_pipeline(
             logger.warning(f"  Empty registry for {cam_name}, skipping")
             continue
 
-        # Capture scene image at initial state
-        image = capture_image(env, cam_name)
+        # Skip views where the registry is incomplete for the task.
+        # - Any task: need at least 1 non-gripper object.
+        # - Transport tasks (put/pick/place/push/move): need at least 2 non-gripper
+        #   objects (source + destination). Without the destination, the VLM uses
+        #   gripper as the endpoint, producing upward nonsense arrows.
+        non_gripper = {k: v for k, v in registry.items() if k != "gripper"}
+        task_lower = task_instruction.lower()
+        is_transport = any(v in task_lower for v in [
+            "put ", "place ", "pick ", "push ", "move ",
+        ])
+        min_objects = 2 if is_transport else 1
+        if len(non_gripper) < min_objects:
+            missing_type = "destination" if is_transport and len(non_gripper) == 1 else "task objects"
+            logger.warning(
+                f"  Registry for '{cam_name}' has only {len(non_gripper)} non-gripper "
+                f"object(s) but task requires {min_objects} (missing {missing_type}). "
+                "Skipping — no meaningful sketch possible for this view."
+            )
+            # Still save the original image so the output directory is complete.
+            image = capture_image(env, cam_name)
+            orig_path = out / f"{cam_name}_original.png"
+            cv2.imwrite(str(orig_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+            logger.info(f"  Saved original (no annotation): {orig_path.name}")
+            continue
 
-        # Save original
+        # Always capture and save the original image first
+        image = capture_image(env, cam_name)
         orig_path = out / f"{cam_name}_original.png"
         cv2.imwrite(str(orig_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         logger.info(f"  Saved original: {orig_path.name}")
@@ -784,6 +867,15 @@ def main():
         "--render-scale", type=int, default=2,
         help="Upscale factor for rendered images (default: 2). Use 1 for native resolution.",
     )
+    parser.add_argument(
+        "--bddl-file", default=None, metavar="PATH",
+        help=(
+            "Override the BDDL file path from the HDF5. "
+            "Use when the HDF5 stores a wrong or stale BDDL filename. "
+            "Run inspect_hdf5 to diagnose: "
+            "python -m sketch_anything.tools.inspect_hdf5 <demo.hdf5>"
+        ),
+    )
     args = parser.parse_args()
 
     # Set GPU before any torch/CUDA imports
@@ -803,6 +895,7 @@ def main():
         model_path=args.model_path,
         llm_model_path=args.llm_model_path,
         render_scale=args.render_scale,
+        bddl_file_override=args.bddl_file,
     )
 
 

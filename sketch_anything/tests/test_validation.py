@@ -193,3 +193,54 @@ class TestWarnings:
         result = validate_primitives(sp, REGISTRY)
         assert result.is_valid
         assert result.errors == []
+
+    def test_zero_length_arrow_warns(self):
+        """Arrow with identical start and end positions produces a warning."""
+        sp = SketchPrimitives(**{
+            "primitives": [
+                {
+                    "type": "arrow",
+                    "start": {"type": "object_relative", "object_id": "red_block", "anchor": "center"},
+                    "end": {"type": "object_relative", "object_id": "red_block", "anchor": "center"},
+                    "step": 1,
+                }
+            ]
+        })
+        result = validate_primitives(sp, REGISTRY)
+        assert result.is_valid  # warning, not hard error
+        assert any("zero" in w.lower() or "identical" in w.lower() for w in result.warnings)
+
+    def test_zero_length_arrow_different_anchors_no_warn(self):
+        """Arrow from one anchor to a different anchor on the same object is fine."""
+        sp = SketchPrimitives(**{
+            "primitives": [
+                {
+                    "type": "arrow",
+                    "start": {"type": "object_relative", "object_id": "red_block", "anchor": "left"},
+                    "end": {"type": "object_relative", "object_id": "red_block", "anchor": "right"},
+                    "step": 3,
+                }
+            ]
+        })
+        result = validate_primitives(sp, REGISTRY)
+        assert not any("identical" in w.lower() or "zero" in w.lower() for w in result.warnings)
+
+    def test_registry_usage_warning_all_absolute(self):
+        """All-absolute primitives when a non-gripper registry exists should warn."""
+        sp = SketchPrimitives(**{
+            "primitives": [
+                {
+                    "type": "circle",
+                    "center": {"type": "absolute", "coords": [0.5, 0.5]},
+                    "radius": 0.04,
+                    "purpose": "grasp_point",
+                    "step": 1,
+                }
+            ]
+        })
+        result = validate_primitives(sp, REGISTRY)
+        assert result.is_valid
+        assert any(
+            "registry" in w.lower() or "object-relative" in w.lower()
+            for w in result.warnings
+        )

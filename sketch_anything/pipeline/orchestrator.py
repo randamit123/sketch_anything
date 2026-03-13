@@ -100,6 +100,24 @@ class SketchPipeline:
                 logger.warning(f"Empty registry for {camera_name}, skipping VLM")
                 continue
 
+            # Skip views where the registry is incomplete for the task.
+            # Transport tasks (put/pick/place/push/move) need at least 2 non-gripper
+            # objects (source + destination). Without the destination the VLM uses
+            # gripper as endpoint, producing nonsense upward arrows.
+            non_gripper = {k: v for k, v in registry.items() if k != "gripper"}
+            task_lower = task_instruction.lower()
+            is_transport = any(v in task_lower for v in [
+                "put ", "place ", "pick ", "push ", "move ",
+            ])
+            min_objects = 2 if is_transport else 1
+            if len(non_gripper) < min_objects:
+                logger.warning(
+                    f"Registry for '{camera_name}' has {len(non_gripper)} non-gripper "
+                    f"object(s) but task requires {min_objects}. "
+                    "Skipping — incomplete registry for this view."
+                )
+                continue
+
             # Generate primitives
             primitives = self.vlm_generator.generate(
                 image=image,

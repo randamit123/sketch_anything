@@ -85,6 +85,12 @@ def resolve_position(
         offset = position.offset if position.offset else (0.0, 0.0)
         x_norm = anchor_coords[0] + offset[0]
         y_norm = anchor_coords[1] + offset[1]
+        # Clamp to image bounds so offsets never produce out-of-frame coordinates.
+        # Do NOT clamp to the object bbox: offsets are intentionally used to
+        # position above/below/beside an object (e.g. approach arrows end at
+        # anchor="top" with a negative y-offset to land slightly above the bbox).
+        x_norm = max(0.0, min(1.0, x_norm))
+        y_norm = max(0.0, min(1.0, y_norm))
     else:
         raise TypeError(f"Unknown position type: {type(position)}")
 

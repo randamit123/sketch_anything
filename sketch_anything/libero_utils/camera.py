@@ -70,6 +70,7 @@ def project_points(
     t: np.ndarray,
     image_width: int,
     image_height: int,
+    clamp: bool = True,
 ) -> np.ndarray:
     """Project 3D points to normalized 2D coordinates.
 
@@ -80,9 +81,12 @@ def project_points(
         t: 3x1 translation vector.
         image_width: Image width in pixels.
         image_height: Image height in pixels.
+        clamp: If True (default), clamp output to [0, 1]. If False, return
+            raw normalized coordinates (may be outside [0, 1] for off-screen
+            points). Behind-camera points are always returned as (0, 0).
 
     Returns:
-        (N, 2) array of normalized [x, y] coordinates in [0, 1].
+        (N, 2) array of normalized [x, y] coordinates.
     """
     # Transform to camera frame
     points_cam = (R @ points_3d.T + t).T  # (N, 3)
@@ -101,7 +105,9 @@ def project_points(
     points_2d[:, 0] /= image_width
     points_2d[:, 1] /= image_height
 
-    return np.clip(points_2d, 0.0, 1.0)
+    if clamp:
+        return np.clip(points_2d, 0.0, 1.0)
+    return points_2d
 
 
 def compute_2d_bbox(
@@ -111,8 +117,13 @@ def compute_2d_bbox(
     t: np.ndarray,
     image_width: int,
     image_height: int,
-) -> List[float]:
-    """Compute 2D bounding box from 3D corners.
+) -> Tuple[List[float], List[float]]:
+    """Compute 2D bounding box and visible centroid from 3D corners.
+
+    The bbox uses clamped projections (existing behaviour). The visible_center
+    is the mean of only those projected corners that land within [0, 1] in both
+    axes — giving a better estimate of where the object actually appears in the
+    frame for large or partially off-screen objects.
 
     Args:
         corners_3d: (8, 3) array of 3D bounding box corners.
@@ -120,13 +131,36 @@ def compute_2d_bbox(
         image_width, image_height: Image dimensions.
 
     Returns:
-        [x_min, y_min, x_max, y_max] in normalized [0, 1] coordinates.
+        bbox: [x_min, y_min, x_max, y_max] in normalized [0, 1] coordinates.
+        visible_center: [cx, cy] centroid of in-frame projected corners, or
+            the clamped bbox midpoint if no corners project into the frame.
     """
-    corners_2d = project_points(corners_3d, K, R, t, image_width, image_height)
+    # Raw (unclamped) projections to find which corners are truly in-frame
+    raw = project_points(corners_3d, K, R, t, image_width, image_height, clamp=False)
 
-    x_min = float(corners_2d[:, 0].min())
-    y_min = float(corners_2d[:, 1].min())
-    x_max = float(corners_2d[:, 0].max())
-    y_max = float(corners_2d[:, 1].max())
+    # Filter behind-camera points (they project to (0, 0) which would skew centroid)
+    points_cam = (R @ corners_3d.T + t).T
+    in_front = points_cam[:, 2] > 0.01
+    in_frame = (
+        in_front
+        & (raw[:, 0] >= 0.0) & (raw[:, 0] <= 1.0)
+        & (raw[:, 1] >= 0.0) & (raw[:, 1] <= 1.0)
+    )
 
-    return [x_min, y_min, x_max, y_max]
+    if in_frame.any():
+        visible_center: List[float] = raw[in_frame].mean(axis=0).tolist()
+    else:
+        visible_center = None  # will be set to bbox midpoint below
+
+    # Clamped bbox (existing behaviour)
+    clamped = np.clip(raw, 0.0, 1.0)
+    x_min = float(clamped[:, 0].min())
+    y_min = float(clamped[:, 1].min())
+    x_max = float(clamped[:, 0].max())
+    y_max = float(clamped[:, 1].max())
+    bbox = [x_min, y_min, x_max, y_max]
+
+    if visible_center is None:
+        visible_center = [(x_min + x_max) / 2.0, (y_min + y_max) / 2.0]
+
+    return bbox, visible_center

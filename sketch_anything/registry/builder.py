@@ -59,15 +59,15 @@ LIBERO_OBJECT_MAPPING: Dict[str, List[str]] = {
     "cream cheese": ["cream_cheese_1", "cream_cheese"],
     "milk": ["milk"],
     "orange juice": ["orange_juice"],
-    "wine bottle": ["wine_bottle_1", "wine_bottle"],
+    "wine bottle": ["wine_bottle_1_main", "wine_bottle_1", "wine_bottle"],
     # Furniture
-    "rack": ["wine_rack_1", "wine_rack"],
-    "wine rack": ["wine_rack_1", "wine_rack"],
-    "drawer": ["drawer", "top_drawer", "middle_drawer", "bottom_drawer"],
-    "top drawer": ["top_drawer"],
-    "middle drawer": ["middle_drawer"],
-    "bottom drawer": ["bottom_drawer"],
-    "cabinet": ["wooden_cabinet_1", "cabinet_door", "cabinet"],
+    "rack": ["wine_rack_1_main", "wine_rack_1", "wine_rack"],
+    "wine rack": ["wine_rack_1_main", "wine_rack_1", "wine_rack"],
+    "drawer": ["wooden_cabinet_1_cabinet_middle", "wooden_cabinet_1_cabinet_top", "wooden_cabinet_1_cabinet_bottom", "drawer", "middle_drawer"],
+    "top drawer": ["wooden_cabinet_1_cabinet_top", "cabinet_top", "top_drawer"],
+    "middle drawer": ["wooden_cabinet_1_cabinet_middle", "cabinet_middle", "middle_drawer"],
+    "bottom drawer": ["wooden_cabinet_1_cabinet_bottom", "cabinet_bottom", "bottom_drawer"],
+    "cabinet": ["wooden_cabinet_1_main", "wooden_cabinet_1", "cabinet_door", "cabinet"],
     "door": ["door", "microwave_door"],
     # Appliances
     # NOTE: "stove" mapping depends on the task verb — see
@@ -75,11 +75,14 @@ LIBERO_OBJECT_MAPPING: Dict[str, List[str]] = {
     # surface body (for "put on" tasks). "turn on" tasks override to the knob
     # via TASK_EXTRA_OBJECTS.
     "microwave": ["microwave"],
-    "stove": ["flat_stove_1", "flat_stove_1_main", "stove", "flat_stove"],
+    # flat_stove_1_burner_plate is the visible cooking surface; flat_stove_1_main
+    # is the structural base frame (positioned BELOW the visible surface).
+    "stove": ["flat_stove_1_burner_plate", "flat_stove_1_main", "stove", "flat_stove"],
     "stove knob": ["flat_stove_1_button", "flat_stove_1_knob", "stove_knob", "knob", "button"],
-    # Regions / landmarks
-    "front of stove": ["flat_stove_1", "flat_stove_1_main"],
-    "front_of_stove": ["flat_stove_1", "flat_stove_1_main"],
+    # Regions / landmarks — "front of stove" targets the cooking surface
+    "front of stove": ["flat_stove_1_burner_plate", "flat_stove_1_main"],
+    "front_of_stove": ["flat_stove_1_burner_plate", "flat_stove_1_main"],
+    "front of the stove": ["flat_stove_1_burner_plate", "flat_stove_1_main"],
 }
 
 # Extra objects to include based on task verb + object combinations.
@@ -90,8 +93,9 @@ TASK_EXTRA_OBJECTS: Dict[tuple, List[str]] = {
     ("turn off", "stove"): ["stove knob"],
     ("open", "microwave"): ["microwave door"],
     ("close", "microwave"): ["microwave door"],
-    ("open", "cabinet"): ["cabinet door"],
-    ("close", "cabinet"): ["cabinet door"],
+    # NOTE: "open/close cabinet" entries removed — they added "cabinet door" which
+    # resolves to the same body as "cabinet" (wooden_cabinet_1_main), creating
+    # duplicate registry entries. Drawer tasks don't need the cabinet body at all.
 }
 
 # Task-verb-aware body overrides for the static resolver.
@@ -395,22 +399,12 @@ def resolve_object_names(
 
     resolved: Dict[str, str] = {}
 
-    # --- Tier 1: LLM resolver (if available) ---
-    if use_llm:
-        llm_result = _resolve_via_llm(
-            task_instruction, extracted_names, available_bodies,
-            model_path=llm_model_path,
-        )
-        if llm_result:
-            resolved.update(llm_result)
-            logger.info(f"  LLM resolved {len(llm_result)} objects")
-
-    # --- Tier 2 + 3: Static + substring for anything still unresolved ---
+    # --- Tier 1: Static + substring mapping (highest priority) ---
+    # Static mapping is authoritative for known objects — run it first so
+    # that hand-curated entries (e.g. "rack" -> wine_rack_1_main) cannot be
+    # overridden by an LLM that may hallucinate wrong body names.
+    unresolved_names: List[str] = []
     for name in extracted_names:
-        name_key = name.replace(" ", "_")
-        # Skip if the LLM already resolved this name (or a close variant)
-        if name in resolved or name_key in resolved:
-            continue
         body = _resolve_single(
             name, available_bodies, objects_dict, fixtures_dict,
             task_instruction=task_instruction,
@@ -419,6 +413,22 @@ def resolve_object_names(
             resolved[name] = body
             logger.info(f"  '{name}' -> '{body}' (static/substring)")
         else:
+            unresolved_names.append(name)
+
+    # --- Tier 2: LLM resolver for names not found in static mapping ---
+    if use_llm and unresolved_names:
+        llm_result = _resolve_via_llm(
+            task_instruction, unresolved_names, available_bodies,
+            model_path=llm_model_path,
+        )
+        if llm_result:
+            resolved.update(llm_result)
+            logger.info(f"  LLM resolved {len(llm_result)} previously unknown objects")
+
+    # Log any names that could not be resolved by any tier
+    for name in extracted_names:
+        name_key = name.replace(" ", "_")
+        if name not in resolved and name_key not in resolved:
             logger.warning(f"  Could not resolve '{name}' to any MuJoCo body")
 
     # Always include gripper
@@ -536,31 +546,39 @@ def build_object_registry(
 
     registries: Dict[str, ViewObjectRegistry] = {}
 
-    # Camera names where the gripper should be excluded from the registry.
-    # The eye-in-hand camera IS mounted on the gripper, so the gripper bbox
-    # covers the bottom half of the frame and produces misleading arrows.
-    _EXCLUDE_GRIPPER_CAMERAS = {"robot0_eye_in_hand"}
-
     for camera_name in camera_names:
         K, R, t = get_camera_matrices(sim, camera_name, image_width, image_height)
         view_registry: ViewObjectRegistry = {}
+        seen_bodies: Set[str] = set()  # deduplicate by mujoco body name
 
         for natural_name, body_name in object_mapping.items():
-            # Skip gripper for eye-in-hand cameras
-            if natural_name == "gripper" and camera_name in _EXCLUDE_GRIPPER_CAMERAS:
-                logger.info(
-                    f"Excluding gripper from '{camera_name}' registry "
-                    f"(camera is mounted on gripper)"
-                )
-                continue
-
             try:
                 corners_3d = get_object_bbox_3d(sim, body_name)
-                bbox = compute_2d_bbox(corners_3d, K, R, t, image_width, image_height)
-                center = [
-                    (bbox[0] + bbox[2]) / 2.0,
-                    (bbox[1] + bbox[3]) / 2.0,
-                ]
+                bbox, center = compute_2d_bbox(corners_3d, K, R, t, image_width, image_height)
+
+                bbox_w = bbox[2] - bbox[0]
+                bbox_h = bbox[3] - bbox[1]
+
+                # Gripper is always included so every arrow can start from it.
+                is_gripper = natural_name == "gripper"
+                if not is_gripper and bbox_w < 0.05 and bbox_h < 0.05:
+                    logger.info(
+                        f"Skipping '{natural_name}' in '{camera_name}': "
+                        f"bbox has no visible area ({bbox_w:.3f}w x {bbox_h:.3f}h)"
+                    )
+                    continue
+
+                # Skip if this MuJoCo body is already represented (prevents duplicate
+                # registry entries when two natural names resolve to the same body,
+                # e.g. "cabinet" and "cabinet_door" both → wooden_cabinet_1_main).
+                if body_name in seen_bodies:
+                    logger.info(
+                        f"Skipping '{natural_name}' in '{camera_name}': "
+                        f"body '{body_name}' already in registry"
+                    )
+                    continue
+                seen_bodies.add(body_name)
+
                 obj_id = natural_name.replace(" ", "_")
 
                 view_registry[obj_id] = {

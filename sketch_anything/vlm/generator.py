@@ -87,6 +87,24 @@ class VLMPrimitiveGenerator:
                     if validation.warnings:
                         for w in validation.warnings:
                             logger.warning(f"Primitive warning: {w}")
+
+                    # On attempts 1 and 2, treat critical warnings as retry-worthy
+                    # so the VLM gets a chance to self-correct before we accept.
+                    critical_warnings = [
+                        w for w in validation.warnings
+                        if "registry" in w.lower() or "zero" in w.lower()
+                    ]
+                    if critical_warnings and attempt < self.config.max_retries - 1:
+                        last_error = (
+                            "Output was structurally valid but has quality issues:\n"
+                            + "\n".join(critical_warnings)
+                        )
+                        logger.warning(
+                            f"Attempt {attempt + 1} has critical warnings, retrying: "
+                            f"{last_error}"
+                        )
+                        continue
+
                     return result
 
                 last_error = "\n".join(validation.errors)
@@ -155,36 +173,37 @@ class VLMPrimitiveGenerator:
 
         ModelClass = None
         model_lower = self.config.model_name.lower()
+        is_qwen3 = "qwen3" in model_lower
         is_qwen25 = "qwen2.5" in model_lower or "qwen2_5" in model_lower
 
-        # 1. Try the native Qwen2.5-VL class (transformers >= 4.49)
-        if is_qwen25:
+        # 1. Qwen3-VL (transformers >= 5.0)
+        if is_qwen3:
+            try:
+                from transformers import Qwen3VLForConditionalGeneration as ModelClass
+                logger.info("Using Qwen3VLForConditionalGeneration")
+            except ImportError:
+                logger.info("Qwen3VLForConditionalGeneration not available")
+
+        # 2. Qwen2.5-VL (transformers >= 4.49)
+        if ModelClass is None and is_qwen25:
             try:
                 from transformers import Qwen2_5_VLForConditionalGeneration as ModelClass
+                logger.info("Using Qwen2_5_VLForConditionalGeneration")
             except ImportError:
-                logger.info(
-                    "Qwen2_5_VLForConditionalGeneration not in this transformers; "
-                    "will use AutoModelForVision2Seq with trust_remote_code"
-                )
+                logger.info("Qwen2_5_VLForConditionalGeneration not available")
 
-        # 2. For non-2.5 models, try Qwen2VLForConditionalGeneration
-        if ModelClass is None and not is_qwen25:
+        # 3. Qwen2-VL
+        if ModelClass is None and not is_qwen25 and not is_qwen3:
             try:
                 from transformers import Qwen2VLForConditionalGeneration as ModelClass
             except ImportError:
                 pass
 
-        # 3. AutoModelForVision2Seq — reads model_type from config.json
-        #    and loads the right class via trust_remote_code=True
+        # 4. AutoModel last resort
         if ModelClass is None:
-            try:
-                from transformers import AutoModelForVision2Seq
-                ModelClass = AutoModelForVision2Seq
-                logger.info("Using AutoModelForVision2Seq (will auto-detect architecture)")
-            except ImportError:
-                from transformers import AutoModel
-                ModelClass = AutoModel
-                logger.info("Using AutoModel as last resort")
+            from transformers import AutoModel
+            ModelClass = AutoModel
+            logger.info("Using AutoModel as last resort")
 
         logger.info(f"Initializing Transformers fallback generator ({self.config.model_name})")
         logger.info(f"  Model class: {ModelClass.__name__}")
@@ -199,10 +218,9 @@ class VLMPrimitiveGenerator:
                 trust_remote_code=True,
             ).to("mps")
         else:
-            dtype = "auto"
             self._fallback_model = ModelClass.from_pretrained(
                 self.config.model_name,
-                torch_dtype=dtype,
+                torch_dtype="auto",
                 device_map="auto",
                 trust_remote_code=True,
             )
@@ -319,7 +337,7 @@ def _extract_json(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON block in text
+    # Try to find JSON object block in text
     matches = re.findall(r"\{[\s\S]*\}", text)
     for match in matches:
         try:
@@ -327,6 +345,18 @@ def _extract_json(text: str) -> dict:
             return _normalize_primitives(raw)
         except json.JSONDecodeError:
             continue
+
+    # VLM sometimes emits a ```json block that starts with "primitives": (no wrapping {})
+    code_block = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if code_block:
+        content = code_block.group(1).strip()
+        if not content.startswith("{"):
+            content = "{" + content + "}"
+        try:
+            raw = json.loads(content)
+            return _normalize_primitives(raw)
+        except json.JSONDecodeError:
+            pass
 
     raise ValueError(f"Could not extract valid JSON from output: {text[:200]}...")
 
@@ -448,6 +478,11 @@ def _generate_mock_primitives(
     gripper_id = "gripper" if "gripper" in object_registry else None
 
     primitives_data: list[dict] = []
+    has_transport = target_id != source_id
+
+    # Step numbering: compact when no transport arrow (single-object case)
+    # so there are no gaps: 1→2→3 (no transport) or 1→2→3→4 (with transport).
+    release_step = 4 if has_transport else 3
 
     # Step 1: approach arrow + grasp circle
     primitives_data.append({
@@ -475,8 +510,8 @@ def _generate_mock_primitives(
         "step": 2,
     })
 
-    # Step 3: transport arrow
-    if target_id != source_id:
+    # Step 3: transport arrow (only when source and target differ)
+    if has_transport:
         src_center = object_registry[source_id]["center"]
         tgt_center = object_registry[target_id]["center"]
         mid_x = (src_center[0] + tgt_center[0]) / 2
@@ -490,19 +525,19 @@ def _generate_mock_primitives(
             "step": 3,
         })
 
-    # Step 4: release circle + gripper open
+    # Release step: circle + gripper open
     primitives_data.append({
         "type": "circle",
         "center": {"type": "object_relative", "object_id": target_id, "anchor": "center"},
         "radius": 0.05,
         "purpose": "release_point",
-        "step": 4,
+        "step": release_step,
     })
     primitives_data.append({
         "type": "gripper",
         "position": {"type": "object_relative", "object_id": target_id, "anchor": "center", "offset": [0.0, -0.05]},
         "action": "open",
-        "step": 4,
+        "step": release_step,
     })
 
     return SketchPrimitives(**{"primitives": primitives_data})

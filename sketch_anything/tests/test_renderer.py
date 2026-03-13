@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from sketch_anything.rendering.config import RenderConfig, get_step_color
-from sketch_anything.rendering.renderer import render_primitives
+from sketch_anything.rendering.renderer import build_legend_data, render_primitives
 from sketch_anything.rendering.resolver import compute_anchor, resolve_position
 from sketch_anything.schemas.primitives import (
     AbsolutePosition,
@@ -88,10 +88,24 @@ class TestResolvePosition:
         )
         px = resolve_position(pos, REGISTRY, 256, 256)
         # top anchor: x = (0.28+0.36)/2=0.32, y = 0.42
-        # with offset: y = 0.42 - 0.03 = 0.39
+        # with offset: y = 0.42 - 0.03 = 0.39 (clamped to [0,1], not bbox)
         expected_x = round(0.32 * 256)
         expected_y = round(0.39 * 256)
         assert px == (expected_x, expected_y)
+
+    def test_negative_offset_resolves_outside_bbox(self):
+        """Negative y-offset from 'top' anchor places the point above the bbox."""
+        pos = ObjectRelativePosition(
+            type="object_relative",
+            object_id="red_block",
+            anchor="top",
+            offset=(0.0, -0.05),
+        )
+        px = resolve_position(pos, REGISTRY, 256, 256)
+        # top y = 0.42, offset -0.05 → y_norm = 0.37, which is ABOVE bbox y_min=0.42
+        expected_y = round(0.37 * 256)
+        assert px[1] == expected_y
+        assert px[1] < round(0.42 * 256)  # must be above the bbox top edge
 
 
 class TestGetStepColor:
@@ -188,6 +202,27 @@ class TestRenderPrimitives:
         result = render_primitives(image, sp, REGISTRY)
         assert result.sum() > 0
 
+    def test_arrow_with_multiple_waypoints_catmull_rom(self):
+        """Arrow with 2 waypoints exercises the Catmull-Rom spline path."""
+        image = self._make_image()
+        sp = SketchPrimitives(**{
+            "primitives": [
+                {
+                    "type": "arrow",
+                    "start": {"type": "absolute", "coords": [0.1, 0.9]},
+                    "end": {"type": "absolute", "coords": [0.9, 0.9]},
+                    "waypoints": [
+                        {"type": "absolute", "coords": [0.3, 0.2]},
+                        {"type": "absolute", "coords": [0.7, 0.2]},
+                    ],
+                    "step": 1,
+                }
+            ]
+        })
+        config = RenderConfig(render_scale=1)
+        result = render_primitives(image, sp, {}, config=config)
+        assert result.sum() > 0
+
     def test_complete_pick_and_place_rendering(self):
         """Render the full CLAUDE.md Section 12 example."""
         image = self._make_image()
@@ -242,3 +277,49 @@ class TestRenderPrimitives:
         # Multiple colors should be present (at least green for step 1 and another)
         # Check green channel has non-trivial values
         assert result[:, :, 1].max() > 0
+
+
+class TestBuildLegendData:
+    def test_legend_structure(self):
+        sp = SketchPrimitives(**{
+            "primitives": [
+                {
+                    "type": "circle",
+                    "center": {"type": "object_relative", "object_id": "red_block", "anchor": "center"},
+                    "radius": 0.04,
+                    "purpose": "grasp_point",
+                    "step": 1,
+                },
+                {
+                    "type": "arrow",
+                    "start": {"type": "object_relative", "object_id": "red_block", "anchor": "center"},
+                    "end": {"type": "object_relative", "object_id": "blue_bowl", "anchor": "center"},
+                    "step": 3,
+                },
+                {
+                    "type": "gripper",
+                    "position": {"type": "object_relative", "object_id": "blue_bowl", "anchor": "center"},
+                    "action": "open",
+                    "step": 4,
+                },
+            ]
+        })
+        legend = build_legend_data(sp)
+        assert "steps" in legend
+        steps = legend["steps"]
+        assert len(steps) == 3  # steps 1, 3, 4
+
+        step1 = steps[0]
+        assert step1["step"] == 1
+        assert step1["color_rgb"] == [0, 255, 0]
+        assert step1["color_hex"] == "#00FF00"
+        assert any("grasp_point" in d for d in step1["primitives"])
+
+        step3 = steps[1]
+        assert step3["step"] == 3
+        assert any("arrow" in d for d in step3["primitives"])
+
+    def test_legend_empty_primitives(self):
+        sp = SketchPrimitives(primitives=[])
+        legend = build_legend_data(sp)
+        assert legend == {"steps": []}

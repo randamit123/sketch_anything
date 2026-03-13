@@ -36,13 +36,27 @@ _p(r"place (?:the )?(.+?) (?:in|on|into|onto) (?:the )?(.+?)$")
 # "pick up the X"
 _p(r"pick up (?:the )?(.+?)$")
 
+# "open the X of the Y" — only extract X (the component being opened); the "of the Y"
+# is contextual (e.g. "of the cabinet") and should NOT be added to the registry as an
+# additional task object.
+_p(r"open (?:the )?(.+?) of (?:the )?(?:.+?)$")
+
+# "open the X and put the Y inside" (compound: open drawer, then put object in)
+_p(r"open (?:the )?(.+?) and put (?:the )?(.+?) inside")
+
 # "open the X"
 _p(r"open (?:the )?(.+?)$")
+
+# "close the X of the Y" — only extract X (same rationale as open)
+_p(r"close (?:the )?(.+?) of (?:the )?(?:.+?)$")
 
 # "close the X"
 _p(r"close (?:the )?(.+?)$")
 
-# "push the X"
+# "push the X to the Y" (e.g. "push the plate to the front of the stove")
+_p(r"push (?:the )?(.+?) to (?:the )?(.+?)$")
+
+# "push the X" (no destination)
 _p(r"push (?:the )?(.+?)$")
 
 # "turn on the X"

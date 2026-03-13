@@ -14,7 +14,7 @@ class VLMConfig:
     ``use_constrained_decoding=True`` for guaranteed valid JSON.
     """
 
-    model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    model_name: str = "Qwen/Qwen3-VL-8B-Instruct"
     max_tokens: int = 2048
     temperature: float = 0.1
     max_retries: int = 3

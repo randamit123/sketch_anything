@@ -53,6 +53,16 @@ class ObjectRelativePosition(BaseModel):
     ]
     offset: Tuple[float, float] = (0.0, 0.0)
 
+    @field_validator("offset")
+    @classmethod
+    def validate_offset(cls, v: Tuple[float, float]) -> Tuple[float, float]:
+        dx, dy = v
+        if not (-0.5 <= dx <= 0.5 and -0.5 <= dy <= 0.5):
+            raise ValueError(
+                f"Offset ({dx}, {dy}) exceeds allowed range [-0.5, 0.5] per component"
+            )
+        return v
+
 
 Position = Union[AbsolutePosition, ObjectRelativePosition]
 
@@ -68,7 +78,7 @@ class ArrowPrimitive(BaseModel):
     start: Position
     end: Position
     waypoints: List[Position] = Field(default_factory=list)
-    step: int = Field(ge=1)
+    step: int = Field(ge=1, le=20)
 
 
 class CirclePrimitive(BaseModel):
@@ -84,7 +94,7 @@ class CirclePrimitive(BaseModel):
         "rotation_pivot",
         "target_location",
     ]
-    step: int = Field(ge=1)
+    step: int = Field(ge=1, le=20)
 
 
 class GripperPrimitive(BaseModel):
@@ -93,7 +103,7 @@ class GripperPrimitive(BaseModel):
     type: Literal["gripper"]
     position: Position
     action: Literal["open", "close"]
-    step: int = Field(ge=1)
+    step: int = Field(ge=1, le=20)
 
 
 Primitive = Union[ArrowPrimitive, CirclePrimitive, GripperPrimitive]

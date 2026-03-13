@@ -146,25 +146,19 @@ def _render_arrow(
     if len(control_pts) <= 2:
         # No waypoints — simple straight line
         cv2.line(canvas, start, end, color, config.arrow_thickness, line_type)
+        from_pt = control_pts[-2]
     else:
-        # Smooth Bézier curve through control points
+        # Smooth Bézier curve through control points — compute once and reuse
+        # for both the polyline draw and the arrowhead tangent direction.
         curve_pts = _bezier_curve(control_pts, num_samples=64)
-        # Draw as a polyline for smooth rendering
         pts_array = np.array(curve_pts, dtype=np.int32).reshape(-1, 1, 2)
         cv2.polylines(canvas, [pts_array], isClosed=False, color=color,
                       thickness=config.arrow_thickness, lineType=line_type)
-
-    # Draw waypoint dots
-    for wp_px in waypoints:
-        cv2.circle(canvas, wp_px, config.waypoint_radius, color, -1, line_type)
-
-    # Draw arrowhead at end — use the curve tangent for direction
-    if len(control_pts) <= 2:
-        from_pt = control_pts[-2]
-    else:
-        # Use the second-to-last point on the Bézier curve for tangent
-        curve_pts = _bezier_curve(control_pts, num_samples=64)
         from_pt = curve_pts[-4] if len(curve_pts) >= 4 else curve_pts[-2]
+
+    # Waypoint dots are intentionally omitted: with a standard quadratic
+    # Bézier the curve doesn't pass through the control point, so a dot
+    # there would appear to float off the curve and confuse the viewer.
 
     _draw_arrowhead(canvas, from_pt, end, color, config, line_type)
 
@@ -187,20 +181,20 @@ def _bezier_curve(
         return list(control_points)
 
     if n == 3:
-        # Quadratic Bézier: curve passes through start, near waypoint, and end.
-        # To make it pass *through* the waypoint we compute a virtual control
-        # point: C = 2*P1 - 0.5*(P0 + P2)  (standard trick).
+        # Standard quadratic Bézier: p1 is the control point (attractor).
+        # The curve is attracted toward p1 but passes through p0 and p2.
+        # We deliberately avoid the "virtual control point" trick (C = 2*P1 - 0.5*(P0+P2))
+        # because when the waypoint is near the image edge and the endpoint is
+        # below it, the virtual control point goes far off-screen, causing the
+        # curve to exit the frame and re-enter — creating a visible disconnect.
         p0 = np.array(control_points[0], dtype=float)
         p1 = np.array(control_points[1], dtype=float)
         p2 = np.array(control_points[2], dtype=float)
-        # Virtual control point so the curve passes through p1 at t=0.5
-        c1 = 2.0 * p1 - 0.5 * (p0 + p2)
 
         result = []
         for i in range(num_samples + 1):
             t = i / num_samples
-            # Quadratic Bézier with virtual control point
-            pt = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * c1 + t ** 2 * p2
+            pt = (1 - t) ** 2 * p0 + 2 * (1 - t) * t * p1 + t ** 2 * p2
             result.append((int(round(pt[0])), int(round(pt[1]))))
         return result
 
@@ -291,7 +285,7 @@ def _render_circle(
 ) -> None:
     """Draw a stroked circle with center dot."""
     center = resolve_position(circle.center, registry, w, h)
-    radius_px = round(circle.radius * max(w, h))
+    radius_px = round(circle.radius * min(w, h))
 
     # Stroked circle
     cv2.circle(canvas, center, radius_px, color, config.circle_stroke_width, line_type)
@@ -327,7 +321,8 @@ def _render_gripper(
     if gripper.action == "close":
         cv2.fillPoly(canvas, [pts], color, line_type)
     else:  # open
-        cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=2, lineType=line_type)
+        cv2.polylines(canvas, [pts], isClosed=True, color=color,
+                      thickness=config.circle_stroke_width, lineType=line_type)
 
 
 # ---------------------------------------------------------------------------
